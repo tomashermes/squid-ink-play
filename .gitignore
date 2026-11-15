@@ -1,0 +1,12 @@
+node_modules/
+android/.gradle/
+android/build/
+android/app/build/
+*.jks
+*.keystore
+*.p12
+signing.properties
+admob.config.json
+.DS_Store
+Thumbs.db
+www/index.html.bak

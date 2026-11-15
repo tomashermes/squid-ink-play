@@ -1,0 +1,1076 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Squid Ink — an Ink Flight underwater sequel</title>
+<!-- Rounded friendly display font (falls back gracefully when offline) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+/* =====================================================================
+   PALETTE — CSS side (water gradient, coral accents, glass UI).
+   The canvas palette lives in the JS block marked "PALETTE — JS side".
+   ===================================================================== */
+:root {
+  --water-top:    #2EC4B6;   /* bright turquoise (top of the sea)      */
+  --water-bottom: #1B2A6B;   /* deep ocean blue/indigo (bottom)        */
+  --coral:        #FF7B9C;   /* button / highlight coral pink          */
+  --teal-glow:    #7DE8D2;   /* bioluminescent teal                    */
+  --violet:       #C77DFF;   /* soft violet detail                     */
+  --glass:        rgba(255,255,255,.14);
+  --glass-border: rgba(255,255,255,.45);
+  --ink-text:     #FFFFFF;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; background: var(--water-bottom); }
+body { font-family: "Fredoka", "Baloo 2", "Comic Sans MS", system-ui, sans-serif; color: var(--ink-text); }
+
+#stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+         background: linear-gradient(var(--water-top), var(--water-bottom)); }
+canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: pointer; }
+
+.hidden { display: none !important; }
+
+/* ---- round glass icon buttons: MUSIC (♪) + PAUSE (⏸/▶), top-right ---- */
+#musicBtn, #pauseBtn {
+  position: absolute; top: 12px; z-index: 5;
+  width: 46px; height: 46px; border-radius: 50%;
+  border: 2px solid var(--glass-border); background: var(--glass);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  color: #fff; font: 600 20px "Fredoka", sans-serif; line-height: 1; cursor: pointer;
+  box-shadow: 0 2px 12px rgba(4,10,40,.35), inset 0 1px 0 rgba(255,255,255,.25);
+  opacity: .92; transition: transform .12s ease, background .12s ease;
+}
+#musicBtn:hover, #pauseBtn:hover { transform: scale(1.07); background: rgba(255,255,255,.24); }
+#musicBtn { right: 66px; }
+#pauseBtn { right: 14px; }
+#musicBtn.off { opacity: .45; text-decoration: line-through; }
+
+/* ---- HUD: distance + best (white, soft shadow, rounded font) ---- */
+#hud {
+  position: absolute; top: 14px; left: 18px; z-index: 4;
+  display: flex; gap: 16px; align-items: baseline; pointer-events: none;
+  text-shadow: 0 2px 8px rgba(4,10,40,.55);
+}
+#dist  { font-size: 27px; font-weight: 700; letter-spacing: .5px; }
+#bestLine { font-size: 15px; font-weight: 600; opacity: .85; }
+
+/* ---- full-screen overlays (start / game over / paused) ---- */
+.overlay {
+  position: absolute; inset: 0; z-index: 10;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; text-align: center; padding: 24px;
+  background: rgba(14, 32, 78, .58);
+  -webkit-backdrop-filter: blur(9px); backdrop-filter: blur(9px);
+}
+.overlay h1 { font-size: clamp(38px, 9vw, 72px); font-weight: 700; letter-spacing: 1px;
+              text-shadow: 0 4px 18px rgba(4,10,40,.6); }
+.overlay h1 em { font-style: normal; color: var(--teal-glow); }
+.tagline { font-size: 17px; opacity: .88; margin-top: -6px; }
+.howto { list-style: none; max-width: 52ch; display: grid; gap: 9px;
+         font-size: 15.5px; line-height: 1.5; opacity: .95; }
+.howto .glow { color: var(--teal-glow); font-weight: 600; }
+.howto .wet  { color: var(--violet); font-weight: 600; }
+.big {
+  font: 700 20px "Fredoka", sans-serif; padding: 13px 46px; border-radius: 40px;
+  border: 2px solid rgba(255,255,255,.6); background: var(--coral); color: #22103A;
+  cursor: pointer; box-shadow: 0 4px 18px rgba(4,10,40,.4);
+}
+.big:hover { filter: brightness(1.1); transform: translateY(-1px); }
+.score { font-size: 28px; font-weight: 700; }
+.score em { font-size: 15px; font-style: normal; opacity: .8; }
+.badge { display: inline-block; margin-left: 8px; padding: 2px 13px; border-radius: 20px;
+         background: var(--teal-glow); color: #0B3B36; font-size: 14px; font-weight: 600;
+         vertical-align: middle; }
+.quiet { font-size: 12.5px; opacity: .65; max-width: 48ch; }
+#deathTitle { text-transform: lowercase; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="game"></canvas>
+
+  <button id="musicBtn" title="Music & sounds on/off" aria-label="Toggle sound">&#9834;</button>
+  <button id="pauseBtn" title="Pause (P / Esc)" aria-label="Pause">&#9208;</button>
+
+  <div id="hud">
+    <span id="dist">0 m</span>
+    <span id="bestLine">best <span id="best">0 m</span></span>
+  </div>
+
+  <div id="startScreen" class="overlay">
+    <h1>Squid <em>Ink</em></h1>
+    <p class="tagline">the Ink Flight makeover &mdash; flap through the coral tunnel</p>
+    <ul class="howto">
+      <li><b>Tap / click / Space</b> &mdash; jet-propel upward. Every flap puffs harmless ink behind you.</li>
+      <li>Fly lazy: flap after flap <b>at the same height</b>, and each one hangs a <span class="glow">glowing kelp stalactite</span> about two seconds ahead, exactly where you keep returning.</li>
+      <li><span class="wet">Translucent = wet</span> and harmless; after a moment it <b>hardens</b> &mdash; solid kelp kills like the rocks &mdash; then shrinks and dissolves away.</li>
+      <li>Rule of the squid: <b>vary your height and you grow nothing.</b> Dodge the coral tunnel&hellip; and your own habits.</li>
+      <li><b>P / Esc</b> pauses &mdash; it also auto-pauses when you switch tabs.</li>
+    </ul>
+    <button id="playBtn" class="big">Dive</button>
+    <p class="quiet">no accounts &middot; no timers &middot; no pressure &mdash; the only things stored on this device are your best distance and your sound preference</p>
+  </div>
+
+  <div id="overScreen" class="overlay hidden">
+    <h1 id="deathTitle">tangled</h1>
+    <p class="tagline" id="deathWhy">your own kelp caught you</p>
+    <p class="score"><span id="finalDist">0 m</span> <em class="quiet">best <span id="finalBest">0 m</span></em> <span id="newBest" class="badge hidden">new best!</span></p>
+    <button id="againBtn" class="big">Dive again</button>
+    <p class="quiet">or just close the tab &mdash; the sea will keep no secrets of you</p>
+  </div>
+
+  <div id="pauseScreen" class="overlay hidden">
+    <h1>Paused</h1>
+    <p class="tagline">the current holds still for you</p>
+    <button id="resumeBtn" class="big">Resume</button>
+  </div>
+</div>
+
+<script>
+/*  Squid Ink — v2 of Ink Flight. Single self-contained file.
+    Layout of this script:
+      [ENGINE]      pure physics/tunnel/kelp/ink logic — no DOM, Node-testable
+      [PALETTE]     every colour constant, one place
+      [SCENE]       underwater background: gradient, rays, caustics, life
+      [WALLS]       coral cave walls + decorations
+      [OCTOPUS]     kawaii player drawing & animation
+      [INK PUFFS]   cosmetic ink particle system
+      [AUDIO]       WebAudio music + sfx (generated, no files)
+      [PAUSE]       pause logic and focus handling
+      [LOOP/GLUE]   input, HUD, overlays, 60 fps frame loop
+*/
+(function (root, factory) {
+  var api = factory();
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  else root.SquidInk = api;
+})(typeof self !== "undefined" ? self : this, function () {
+"use strict";
+
+/* ############################################################
+   ##  [ENGINE]  PURE GAME LOGIC  —  physics, tunnel, kelp,  ##
+   ##  ink particles, scoring. No DOM. Exports for Node.     ##
+   ############################################################ */
+// <<ENGINE>>
+var CFG = {
+  /* --- core flight feel (unchanged from Ink Flight v1) --- */
+  H: 480,              // design height (world units); width follows aspect ratio
+  OCTO_X: 150,         // fixed screen-space octopus position
+  GRAV: 1150,          // px/s² — "water weight"
+  FLAP_V: -350,        // px/s upward jet impulse
+  R: 9,                // collision radius
+  /* --- the kelp rule: lazy hovering grows hazards --- */
+  SPRAY_T: 1.6,        // kelp lands 1.6 "seconds of scroll" ahead of you
+  SOLID_T: 0.9,        // hardens (becomes lethal) after ~0.9 s
+  FADE_T: 3.2,         // then shrinks and dissolves
+  MAX_STROKES: 12,     // cap of live kelp strands
+  /* --- tunnel --- */
+  COL_W: 16,           // sampling column width (px)
+  SPEED0: 170, SPEED_MAX: 300, RAMP: 2400,  // scroll speed + difficulty ramp
+  /* --- ink puff particle system (COSMETIC ONLY) --- */
+  INK_MIN: 6, INK_MAX_COUNT: 12,             // blobs emitted per flap
+  INK_CAP: 260,                              // hard cap for performance
+  INK_LIFE: 1.0, INK_LIFE_VAR: 0.5,          // fade over 1.0–1.5 s
+  INK_DRAG: 2.0,                             // water drag (per-second decay)
+  INK_SINK: 55,                              // gentle downward drift px/s²
+  INK_GROWTH: 9,                             // blob radius growth px/s
+  INK_GROW_MAX: 2.1,                         // …up to this × initial radius
+};
+
+function mulberry32(seed) {
+  var a = seed >>> 0;
+  return function () {
+    a = (a + 0x6d2b79f5) | 0;
+    var t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* Tunnel = ceiling/floor curves from seeded noise + periodic squeezes.
+   The safe gap is guaranteed on every seed (asserted in tests). */
+function makeTunnel(rand) {
+  var phase1 = rand() * 7, phase2 = rand() * 7;
+  var MIN_GAP = 155, HARD_GAP = 118;
+  return function (x, diff) {
+    var ceil = 46 + 34 * Math.sin(x / 300 + phase1) + 22 * Math.sin(x / 93 + phase2) + diff * 26;
+    var floor = CFG.H - 46 - 34 * Math.sin(x / 340 + phase2) - 22 * Math.sin(x / 84 + phase1) - diff * 26;
+    var node = Math.sin(x / 260 + phase1 * 3);
+    if (node > 0.55) {
+      var mid = (ceil + floor) / 2;
+      var gap = MIN_GAP - diff * (MIN_GAP - HARD_GAP);
+      ceil = Math.max(ceil, mid - gap / 2);
+      floor = Math.min(floor, mid + gap / 2);
+    }
+    if (floor - ceil < MIN_GAP - diff * 30) {
+      var m = (ceil + floor) / 2, g = MIN_GAP - diff * 26;
+      ceil = m - g / 2; floor = m + g / 2;
+    }
+    return { top: Math.max(8, ceil), bot: Math.min(CFG.H - 8, floor) };
+  };
+}
+
+function create(opts) {
+  opts = opts || {};
+  var rand = mulberry32(opts.seed || (Date.now() & 0xffff));
+  var tunnel = makeTunnel(rand);
+  return {
+    cfg: CFG,
+    worldW: opts.worldW || 800,
+    dist: 0,
+    t: 0,
+    speed: CFG.SPEED0,
+    octo: { y: CFG.H / 2, vy: 0 },
+    strokes: [],   // kelp: {x, y, depth, born, bot} in WORLD coords
+    ink: [],       // cosmetic ink blobs: {x,y,vx,vy,r,r0,gr,age,total}
+    status: "ready",   // ready | flying | dead | paused
+    deadCause: null,
+    _lastFlapY: undefined,
+    _rand: rand,
+    _tunnel: tunnel,
+  };
+}
+
+function octoWX(w) { return w.dist + CFG.OCTO_X; }
+function difficulty(w) { return Math.min(1, w.dist / (CFG.RAMP * 2)); }
+
+/* --- ink puff emission: 6–12 dark blobs behind & below the jet --- */
+function emitInkPuff(w, x, y) {
+  var n = CFG.INK_MIN + Math.floor(w._rand() * (CFG.INK_MAX_COUNT - CFG.INK_MIN + 1));
+  for (var i = 0; i < n; i++) {
+    // spread opposite the flap push: backwards (−x) and downwards
+    var ang = Math.PI * 0.62 + (w._rand() - 0.5) * 1.5;  // canvas angles: cos<0 = back, sin>0 = down
+    var sp = 40 + w._rand() * 130;
+    var r0 = 2.5 + w._rand() * 4.5;
+    w.ink.push({
+      x: x + (w._rand() - 0.5) * 8, y: y + (w._rand() - 0.5) * 6,
+      vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
+      r: r0, r0: r0, gr: CFG.INK_GROWTH * (0.6 + w._rand() * 0.8),
+      age: 0, total: CFG.INK_LIFE + w._rand() * CFG.INK_LIFE_VAR,
+    });
+  }
+  while (w.ink.length > CFG.INK_CAP) w.ink.shift();       // oldest blobs drop first
+}
+
+function updateInk(w, dt) {
+  for (var i = w.ink.length - 1; i >= 0; i--) {
+    var p = w.ink[i];
+    p.age += dt;
+    if (p.age >= p.total) { w.ink.splice(i, 1); continue; }
+    // water drag + gentle sink, blobs expand as they diffuse
+    p.vx -= p.vx * CFG.INK_DRAG * dt;
+    p.vy -= p.vy * CFG.INK_DRAG * dt;
+    p.vy += CFG.INK_SINK * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.r = Math.min(p.r0 * CFG.INK_GROW_MAX, p.r + p.gr * dt);
+  }
+}
+
+/* --- flap: jet impulse + ink puff + the v1 "lazy hovering" rule --- */
+function flap(w) {
+  if (w.status !== "flying") return;
+  var prevY = w._lastFlapY;
+  w.octo.vy = CFG.FLAP_V;
+  w._lastFlapY = w.octo.y;
+  emitInkPuff(w, octoWX(w) - 16, w.octo.y + 4);   // cosmetic, never collides
+  // Design law (kept from Ink Flight): a flap that CHANGES your altitude grows
+  // nothing. Repeated same-height flapping hangs a shrinking kelp stalactite
+  // SPRAY_T seconds-of-scroll ahead, at the height you keep returning to.
+  if (prevY === undefined || Math.abs(w.octo.y - prevY) >= 36) return;
+  var xArr = octoWX(w) + w.speed * CFG.SPRAY_T;
+  var tw = w._tunnel(xArr, difficulty(w));
+  var yArr = Math.max(tw.top + 10, Math.min(tw.bot - 24, w.octo.y));
+  w.strokes.push({ x: xArr, y: yArr, depth: 80, born: w.t, _sounded: false, bot: tw.bot });
+  if (w.strokes.length > CFG.MAX_STROKES) w.strokes.shift();
+}
+
+function step(w, dt) {
+  if (w.status !== "flying") return;   // paused / dead / ready: physics frozen
+  w.t += dt;
+  w.speed = Math.min(CFG.SPEED_MAX, CFG.SPEED0 + w.dist / CFG.RAMP * (CFG.SPEED_MAX - CFG.SPEED0));
+  w.dist += w.speed * dt;
+
+  w.octo.vy += CFG.GRAV * dt;
+  w.octo.y += w.octo.vy * dt;
+  var bx = octoWX(w);
+
+  // kelp lifecycle: wet → solid segment from s.y to s.y+len kills on contact
+  for (var i = w.strokes.length - 1; i >= 0; i--) {
+    var s = w.strokes[i];
+    var age = w.t - s.born;
+    if (age > CFG.FADE_T || s.x < w.dist - 80) { w.strokes.splice(i, 1); continue; }
+    if (age < CFG.SOLID_T) continue;                       // wet: pass through
+    var len = s.depth * Math.max(0.15, 1 - (age - CFG.SOLID_T) / (CFG.FADE_T - CFG.SOLID_T));
+    var y2 = Math.min(s.bot - 4, s.y + len);
+    if (Math.abs(bx - s.x) < CFG.R + 6 && w.octo.y + CFG.R > s.y && w.octo.y - CFG.R < y2) {
+      return die(w, "kelp", w.octo.y);
+    }
+  }
+
+  var tw = w._tunnel(bx, difficulty(w));
+  if (w.octo.y - CFG.R < tw.top) return die(w, "ceiling", tw.top);
+  if (w.octo.y + CFG.R > tw.bot) return die(w, "floor", tw.bot);
+
+  updateInk(w, dt);
+}
+
+function die(w, cause, yTouch) {
+  w.status = "dead";
+  w.deadCause = cause;
+  // death "poof": a radial ink burst (same cosmetic blob system)
+  var bx = octoWX(w);
+  for (var i = 0; i < 26; i++) {
+    var a = w._rand() * Math.PI * 2, sp = 60 + w._rand() * 240;
+    var r0 = 2 + w._rand() * 5;
+    w.ink.push({
+      x: bx, y: w.octo.y,
+      vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+      r: r0, r0: r0, gr: CFG.INK_GROWTH * (0.5 + w._rand()),
+      age: 0, total: 0.8 + w._rand() * 0.6,
+    });
+  }
+  while (w.ink.length > CFG.INK_CAP) w.ink.shift();
+  return w;
+}
+
+function meters(w) { return Math.floor(w.dist / 12); }
+// <<END-ENGINE>>
+/* ############################################################
+   ##  [ENGINE] END — everything below is DOM / rendering and ##
+   ##  only runs in the browser.                               ##
+   ############################################################ */
+
+if (typeof document === "undefined") {          // we're in Node (tests)
+  return { CFG: CFG, create: create, flap: flap, step: step, die: die,
+           updateInk: updateInk, octoWX: octoWX, meters: meters, mulberry32: mulberry32 };
+}
+
+/* ---------------------------------------------------------------
+   ##  [PALETTE]  every canvas colour, one place — tweak freely ##
+   --------------------------------------------------------------- */
+var PAL = {
+  // water column: bright turquoise surface → deep indigo seabed
+  waterTop:  "#2EC4B6", waterMid: "#1E7FA8", waterLow: "#1D4E89", waterDeep: "#1B2A6B",
+  // cave rock: ceiling (purples/magentas) and floor (blues/teals)
+  ceilCore: "#1C0F38", ceilMid: "#5E2A7A", ceilEdge: "#B44E86", ceilLine: "rgba(255,168,204,.55)",
+  floorCore: "#0B1E4A", floorMid: "#1F6E8F", floorEdge: "#37C6B0", floorLine: "rgba(140,240,220,.55)",
+  // decorative coral/anemone/seaweed hues
+  decor: ["#FF7B9C", "#C77DFF", "#FF9E6D", "#4EE6C8", "#F25BD0", "#8DE86E"],
+  kelpWet: "rgba(150,255,225,",                       // + alpha + ")" — wet preview
+  tether: "rgba(255,255,255,.35)",
+  // solid kelp variants (bioluminescent stalks): [glow, body]
+  kelpSets: [["#7DE8D2", "#2FBF9E"], ["#FFB3D9", "#E0559C"], ["#FFCF9B", "#F2913D"]],
+  // ink
+  ink: "10,8,40",                                     // rgb() of a dark squid-ink navy
+  inkBlur: 4,                                          // px (design scale) — gooey merge
+  // octopus: pastel pink → orange → purple
+  octoTop: "#FFC9AE", octoMid: "#FF8FC0", octoLow: "#B678E8",
+  octoOutline: "rgba(90,40,120,.35)",
+  tentacle: "#F27FB4", tentacleIn: "#FFB9DC",
+  eyeWhite: "#FFFFFF", pupil: "#2B2140", blush: "rgba(255,120,150,.5)",
+  fish: "rgba(9,22,58,.30)", bubble: "rgba(255,255,255,.38)", plankton: "rgba(200,255,245,.35)",
+  ray: "rgba(210,255,250,.06)", caustic: "rgba(190,255,250,.07)",
+  vignette: "4,10,30",
+};
+
+var E = { CFG: CFG, create: create, flap: flap, step: step, die: die,
+          updateInk: updateInk, octoWX: octoWX, meters: meters };
+
+/* ------------------------------------------------------------------
+   ##  [SCENE]  background, light rays, caustics, ambient life     ##
+   ##  (bubbles / plankton / fish use parallax for depth)          ##
+   ------------------------------------------------------------------ */
+var canvas = document.getElementById("game");
+var ctx = canvas.getContext("2d");
+
+var world = null;
+var scale = 1, dpr = 1, W = 800, H = 480;      // CSS px viewport
+var bestKey = "squidink.best", soundKey = "squidink.sound";
+var best = parseInt(localStorage.getItem(bestKey) || "0", 10);
+var soundOn = localStorage.getItem(soundKey) !== "off";
+
+var animT = 0;          // ambient clock — FREEZES while paused (see [PAUSE])
+var flapFx = 0;         // seconds left of squash animation
+var lastT = 0, shake = 0;
+
+// ink layer: drawn offscreen, composited with a blur = metaball/gooey merge
+var inkCv = document.createElement("canvas"), inkCtx = inkCv.getContext("2d");
+var canFilter = (function () {
+  try { ctx.filter = "blur(2px)"; var ok = ctx.filter.indexOf("blur") === 0; ctx.filter = "none"; return ok; }
+  catch (e) { return false; }
+})();
+
+var bubbles = [], plankton = [], fish = [], rays = [], poofRings = [];
+function hash1(x) { var s = Math.sin(x * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); }
+
+function seedAmbient(vw) {
+  bubbles.length = plankton.length = fish.length = 0;
+  for (var i = 0; i < 30; i++)
+    bubbles.push({ x: Math.random() * vw, y: Math.random() * CFG.H, r: 1.2 + Math.random() * 2.8,
+                   spd: 18 + Math.random() * 30, f: 0.3 + Math.random() * 0.5, ph: Math.random() * 7 });
+  for (i = 0; i < 60; i++)
+    plankton.push({ x: Math.random() * vw, y: Math.random() * CFG.H, r: 0.7 + Math.random() * 1.3,
+                   f: 0.45, ph: Math.random() * 7 });
+  for (i = 0; i < 8; i++)
+    fish.push({ x: Math.random() * vw * 1.6, y: 70 + Math.random() * 320, s: 6 + Math.random() * 9,
+                spd: 14 + Math.random() * 22, f: 0.35, ph: Math.random() * 7 });
+  for (i = 0; i < 5; i++) rays.push({ x: i * (vw / 5) + Math.random() * 60, w: 26 + Math.random() * 40, ph: Math.random() * 7 });
+}
+
+function updateAmbient(dt, vw, scrollSpeed) {
+  var i, b;
+  for (i = 0; i < bubbles.length; i++) {              // slow rising, swaying, wrap
+    b = bubbles[i]; b.y -= b.spd * dt; b.x -= scrollSpeed * b.f * dt;
+    if (b.y < -6) { b.y = CFG.H + 6; b.x = Math.random() * vw; }
+    if (b.x < -8) b.x = vw + 8;
+  }
+  for (i = 0; i < plankton.length; i++) {             // drifting motes
+    p = plankton[i]; p.x -= scrollSpeed * p.f * dt;
+    if (p.x < -4) { p.x = vw + 4; p.y = Math.random() * CFG.H; }
+  }
+  var p;
+  for (i = 0; i < fish.length; i++) {                 // tiny background shoal
+    var f = fish[i]; f.x -= (f.spd + scrollSpeed * f.f) * dt;
+    if (f.x < -60) { f.x = vw + 30 + Math.random() * 200; f.y = 70 + Math.random() * 320; }
+  }
+  for (i = poofRings.length - 1; i >= 0; i--) {       // death rings
+    poofRings[i].t += dt; if (poofRings[i].t > 0.6) poofRings.splice(i, 1);
+  }
+}
+
+function drawBackground(vw) {
+  var g = ctx.createLinearGradient(0, -20, 0, CFG.H + 20);   // [PALETTE] water column
+  g.addColorStop(0, PAL.waterTop); g.addColorStop(0.35, PAL.waterMid);
+  g.addColorStop(0.7, PAL.waterLow); g.addColorStop(1, PAL.waterDeep);
+  ctx.fillStyle = g; ctx.fillRect(-20, -20, vw + 40, CFG.H + 40);
+
+  // god rays from the surface — slowly swaying translucent beams
+  ctx.save(); ctx.globalCompositeOperation = "screen";
+  rays.forEach(function (r) {
+    var x = ((r.x + animT * 14 - (world ? world.dist * 0.05 : 0)) % (vw + 320) + vw + 320) % (vw + 320) - 160;
+    var lean = 60 + 18 * Math.sin(animT * 0.25 + r.ph);
+    var gg = ctx.createLinearGradient(x, 0, x + lean, CFG.H * 0.85);
+    gg.addColorStop(0, PAL.ray); gg.addColorStop(1, "rgba(210,255,250,0)");
+    ctx.fillStyle = gg;
+    ctx.beginPath();
+    ctx.moveTo(x - r.w / 2, -10); ctx.lineTo(x + r.w / 2, -10);
+    ctx.lineTo(x + lean + r.w * 1.6, CFG.H * 0.9); ctx.lineTo(x + lean - r.w * 0.4, CFG.H * 0.9);
+    ctx.closePath(); ctx.fill();
+  });
+  ctx.restore();
+
+  // plankton motes
+  ctx.fillStyle = PAL.plankton;
+  plankton.forEach(function (p) {
+    var yy = p.y + Math.sin(animT * 1.4 + p.ph) * 4;
+    ctx.beginPath(); ctx.arc(p.x, yy, p.r, 0, 7); ctx.fill();
+  });
+
+  // fish silhouettes (parallax behind the walls)
+  if (world) fish.forEach(function (f) {
+    var wig = Math.sin(animT * 6 + f.ph) * 2;
+    ctx.fillStyle = PAL.fish;
+    ctx.save(); ctx.translate(f.x, f.y + Math.sin(animT * 0.8 + f.ph) * 8);
+    ctx.beginPath(); ctx.ellipse(0, 0, f.s, f.s * 0.45, 0, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(f.s * 0.7, 0); ctx.lineTo(f.s * 1.4, -f.s * 0.4 + wig);
+    ctx.lineTo(f.s * 1.4, f.s * 0.4 + wig); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  });
+
+  // bubbles
+  ctx.strokeStyle = PAL.bubble; ctx.lineWidth = 1;
+  bubbles.forEach(function (b) {
+    var xx = b.x + Math.sin(animT * 2.2 + b.ph) * 3;
+    ctx.beginPath(); ctx.arc(xx, b.y, b.r, 0, 7); ctx.stroke();
+    ctx.beginPath(); ctx.arc(xx - b.r * 0.3, b.y - b.r * 0.3, Math.max(0.4, b.r * 0.25), 0, 7); ctx.stroke();
+  });
+}
+
+/* ------------------------------------------------------------------
+   ##  [WALLS]  colorful coral cave: gradient rock, soft outlines, ##
+   ##  decorative seaweed / anemones / corals / shells             ##
+   ##  Visual bumps only push INTO the rock, never into the safe   ##
+   ##  corridor, so the hitboxes (smooth curve) stay honest.       ##
+   ------------------------------------------------------------------ */
+function rockBump(wx) { return 3 + 3 * Math.sin(wx / 23) + 2 * Math.sin(wx / 7 + 2); }
+
+function drawWalls(vw, diff) {
+  var cols = [], stepPx = CFG.COL_W;
+  for (var sx = -stepPx; sx <= vw + stepPx; sx += stepPx) {
+    var wx = (world ? world.dist : 0) + sx, t = world._tunnel(wx, diff);
+    cols.push({ sx: sx, wx: wx, top: t.top, bot: t.bot });
+  }
+  var bumpTop = cols.map(function (c) { return Math.max(2, c.top - rockBump(c.wx)); });
+  var bumpBot = cols.map(function (c) { return Math.min(CFG.H - 2, c.bot + rockBump(c.wx * 1.3)); });
+
+  // ceiling rock
+  var g1 = ctx.createLinearGradient(0, -20, 0, CFG.H * 0.32);
+  g1.addColorStop(0, PAL.ceilCore); g1.addColorStop(0.6, PAL.ceilMid); g1.addColorStop(1, PAL.ceilEdge);
+  ctx.fillStyle = g1;
+  ctx.beginPath(); ctx.moveTo(-40, -40);
+  cols.forEach(function (c, k) { ctx.lineTo(c.sx, bumpTop[k]); });
+  ctx.lineTo(vw + 40, -40); ctx.closePath(); ctx.fill();
+
+  // floor rock
+  var g2 = ctx.createLinearGradient(0, CFG.H * 0.66, 0, CFG.H + 20);
+  g2.addColorStop(0, PAL.floorEdge); g2.addColorStop(0.45, PAL.floorMid); g2.addColorStop(1, PAL.floorCore);
+  ctx.fillStyle = g2;
+  ctx.beginPath(); ctx.moveTo(-40, CFG.H + 40);
+  cols.forEach(function (c, k) { ctx.lineTo(c.sx, bumpBot[k]); });
+  ctx.lineTo(vw + 40, CFG.H + 40); ctx.closePath(); ctx.fill();
+
+  // soft glowing outlines on the TRUE collision edges
+  ctx.lineCap = "round";
+  ctx.strokeStyle = PAL.ceilLine; ctx.lineWidth = 2.5;
+  ctx.beginPath(); cols.forEach(function (c, k) { k ? ctx.lineTo(c.sx, c.top) : ctx.moveTo(c.sx, c.top); }); ctx.stroke();
+  ctx.strokeStyle = PAL.floorLine;
+  ctx.beginPath(); cols.forEach(function (c, k) { k ? ctx.lineTo(c.sx, c.bot) : ctx.moveTo(c.sx, c.bot); }); ctx.stroke();
+
+  // decorations anchored to the edges, keyed to world-x so they scroll with the rocks
+  var cell = 80, w0 = world ? world.dist : 0;
+  var start = Math.floor((w0 - stepPx) / cell) * cell;
+  var end = w0 + vw + cell;
+  for (var wx = start; wx < end; wx += cell) {
+    var sx = wx - w0;
+    if (sx < -cell || sx > vw + cell) continue;
+    var h = hash1(wx);
+    var t = world._tunnel(wx, diff);
+    decorate(sx, t.top, wx, h, "ceil");
+    var h2 = hash1(wx * 1.7 + 5);
+    decorate(sx, t.bot, wx, h2, "floor");
+  }
+}
+
+function decorate(sx, edgeY, wx, h, side) {
+  if (h < 0.32) return;                                   // sparse — not a thicket
+  var col = PAL.decor[Math.floor(hash1(wx * 3.1) * PAL.decor.length)];
+  var dir = side === "ceil" ? -1 : 1;                     // grows away from opening
+  ctx.save(); ctx.translate(sx, edgeY); ctx.scale(1, dir);
+  if (h > 0.78) drawSeaWeed(wx, col);
+  else if (h > 0.64) drawAnemone(col);
+  else if (h > 0.48) drawCoral(col);
+  else if (dir === 1) drawShell();                        // shells only on the floor
+  ctx.restore();
+}
+
+// swaying seaweed strands (animated by animT → frozen while paused)
+function drawSeaWeed(wx, col) {
+  var n = 2 + Math.floor(hash1(wx * 2) * 3);
+  ctx.lineCap = "round"; ctx.globalAlpha = 0.8;
+  for (var j = 0; j < n; j++) {
+    var hh = 24 + hash1(wx + j * 13) * 42;
+    var sway = Math.sin(animT * 1.3 + wx * 0.05 + j) * 9;
+    ctx.strokeStyle = col; ctx.lineWidth = 5 - j * 0.7;
+    ctx.beginPath(); ctx.moveTo(j * 4 - n * 2, 2);
+    ctx.bezierCurveTo(j * 4 - n * 2 + sway * 0.4, hh * 0.4, sway * 0.8, hh * 0.7, sway, hh);
+    ctx.stroke();
+    ctx.globalAlpha = 0.25; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(j * 4 - n * 2, 2);
+    ctx.bezierCurveTo(j * 4 - n * 2 + sway * 0.4, hh * 0.4, sway * 0.8, hh * 0.7, sway, hh);
+    ctx.stroke(); ctx.globalAlpha = 0.8;
+  }
+}
+
+function drawAnemone(col) {
+  ctx.fillStyle = col; ctx.globalAlpha = 0.85;
+  ctx.beginPath(); ctx.arc(0, 6, 6, 0, 7); ctx.fill();
+  ctx.strokeStyle = col; ctx.lineWidth = 1.6; ctx.lineCap = "round";
+  for (var k = 0; k < 7; k++) {
+    var a = -Math.PI * 0.15 - (k / 6) * Math.PI * 0.7 - Math.PI * 0.0;
+    var len = 9 + Math.sin(animT * 2 + k * 1.7) * 2.2;
+    ctx.beginPath(); ctx.moveTo(0, 4);
+    ctx.lineTo(Math.cos(a - Math.PI / 2) * 5, 4 + 0);
+    ctx.lineTo(Math.cos(a - Math.PI / 2) * 9, -len);
+    ctx.stroke();
+  }
+}
+
+function drawCoral(col) {
+  ctx.strokeStyle = col; ctx.lineCap = "round"; ctx.globalAlpha = 0.9;
+  ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(0, 4); ctx.lineTo(0, 16); ctx.stroke();
+  ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(0, 14); ctx.lineTo(-9, 24); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, 14); ctx.lineTo(8, 26); ctx.stroke();
+  ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(-9, 24); ctx.lineTo(-13, 32); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(8, 26); ctx.lineTo(13, 33); ctx.stroke();
+}
+
+function drawShell() {
+  ctx.fillStyle = "#FFE3C2"; ctx.globalAlpha = 0.7;
+  ctx.beginPath(); ctx.arc(0, 4, 8, Math.PI, 0); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = "rgba(180,120,80,.5)"; ctx.lineWidth = 1;
+  for (var k = 1; k < 4; k++) {
+    ctx.beginPath(); ctx.moveTo(0, 4);
+    ctx.lineTo(Math.cos(Math.PI + (k / 4) * Math.PI) * 8, 4 + Math.sin(Math.PI + (k / 4) * Math.PI) * 8);
+    ctx.stroke();
+  }
+}
+
+/* wavy light ribbons near the surface + a gentle edge vignette */
+function drawCaustics(vw) {
+  ctx.save(); ctx.globalCompositeOperation = "overlay";
+  ctx.strokeStyle = PAL.caustic; ctx.lineWidth = 11; ctx.lineCap = "round";
+  for (var k = 0; k < 3; k++) {
+    var base = 40 + k * 34;
+    ctx.beginPath();
+    for (var x = -20; x <= vw + 20; x += 26) {
+      var wx = x + (world ? world.dist : 0);
+      var y = base + 14 * Math.sin(wx / 80 + animT * (1.1 + k * 0.25)) + 6 * Math.sin(wx / 23 - animT * 1.7);
+      k === 0 && x === -20 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawVignette(vw) {
+  var g = ctx.createRadialGradient(vw / 2, CFG.H / 2, CFG.H * 0.42, vw / 2, CFG.H / 2, CFG.H * 1.15);
+  g.addColorStop(0, "rgba(" + PAL.vignette + ",0)");
+  g.addColorStop(1, "rgba(" + PAL.vignette + ",.42)");
+  ctx.fillStyle = g; ctx.fillRect(-20, -20, vw + 40, CFG.H + 40);
+}
+
+/* ------------------------------------------------------------------
+   ##  [HEHAZARD→]  the kelp stalactites + tethered aiming line   ##
+   ##  same lifecycle & hitbox as v1's ink drips, new skin:       ##
+   ##  glowing bioluminescent tube-coral hanging from a bulb.     ##
+   ------------------------------------------------------------------ */
+function drawStalks(vw) {
+  if (!world) return;
+  world.strokes.forEach(function (s) {
+    var age = world.t - s.born;
+    var px = s.x - world.dist, py = s.y;
+    if (px < -60 || px > vw + 60) return;
+    var solid = age >= CFG.SOLID_T;
+    var shrink = Math.max(0.15, 1 - Math.max(0, age - CFG.SOLID_T) / (CFG.FADE_T - CFG.SOLID_T));
+    var alpha = age > CFG.FADE_T - 0.6 ? Math.max(0, (CFG.FADE_T - age) / 0.6) : 1;
+    var len = Math.min(s.bot - 4 - py, s.depth * shrink);
+    var set = PAL.kelpSets[Math.floor(hash1(s.x * 0.37) * PAL.kelpSets.length)];
+    ctx.lineCap = "round";
+    if (!solid) {
+      // wet preview + the tethered aiming line back to the octopus
+      ctx.strokeStyle = PAL.tether; ctx.lineWidth = 2; ctx.setLineDash([4, 7]);
+      ctx.beginPath(); ctx.moveTo(CFG.OCTO_X, world.octo.y); ctx.lineTo(px, py); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.strokeStyle = PAL.kelpWet + "0.34)"; ctx.lineWidth = 8;
+      ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px, py + len); ctx.stroke();
+      ctx.fillStyle = PAL.kelpWet + "0.34)";
+      ctx.beginPath(); ctx.arc(px, py, 6, 0, 7); ctx.fill();
+      ctx.strokeStyle = PAL.kelpWet + "0.5)"; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(px, py, 9, 0, 7); ctx.stroke();
+    } else {
+      ctx.globalAlpha = alpha;
+      // soft bioluminescent halo
+      var hg = ctx.createRadialGradient(px, py, 2, px, py, 20);
+      hg.addColorStop(0, hexA(set[0], 0.30)); hg.addColorStop(1, hexA(set[0], 0));
+      ctx.fillStyle = hg; ctx.beginPath(); ctx.arc(px, py, 20, 0, 7); ctx.fill();
+      // wavy stalk (same rect hitbox as v1's straight drip)
+      var sw = Math.sin(animT * 2 + s.x * 0.02) * 3;
+      var gg = ctx.createLinearGradient(px, py, px, py + len);
+      gg.addColorStop(0, set[0]); gg.addColorStop(1, set[1]);
+      ctx.strokeStyle = gg; ctx.lineWidth = 7;
+      ctx.beginPath(); ctx.moveTo(px, py);
+      ctx.bezierCurveTo(px + sw, py + len * 0.33, px - sw, py + len * 0.66, px + sw * 0.5, py + len);
+      ctx.stroke();
+      ctx.strokeStyle = "rgba(255,255,255,.35)"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(px - 1.5, py + 3);
+      ctx.bezierCurveTo(px + sw - 1.5, py + len * 0.33, px - sw - 1.5, py + len * 0.66, px + sw * 0.5 - 1.5, py + len);
+      ctx.stroke();
+      // bulb head + tapered glowing tip
+      ctx.fillStyle = set[0];
+      ctx.beginPath(); ctx.arc(px, py, 7.5, 0, 7); ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,.55)";
+      ctx.beginPath(); ctx.arc(px - 2.4, py - 2.4, 2.6, 0, 7); ctx.fill();
+      ctx.fillStyle = set[1];
+      ctx.beginPath(); ctx.moveTo(px - 3.5 + sw * 0.5, py + len); ctx.lineTo(px + 3.5 + sw * 0.5, py + len);
+      ctx.lineTo(px + sw * 0.5, py + len + 7); ctx.closePath(); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    if (!s._sounded && age >= CFG.SOLID_T) { s._sounded = true; sfxSolid(); }
+  });
+}
+function hexA(hex, a) {           // "#RRGGBB" → "rgba(r,g,b,a)"
+  var n = parseInt(hex.slice(1), 16);
+  return "rgba(" + (n >> 16 & 255) + "," + (n >> 8 & 255) + "," + (n & 255) + "," + a + ")";
+}
+
+/* ------------------------------------------------------------------
+   ##  [INK PUFFS]  COSMETIC ink rendered from world.ink           ##
+   ##  Blobs are drawn solid to an offscreen canvas, then blurred  ##
+   ##  when composited — overlapping blobs melt into one cloud     ##
+   ##  (the gooey/metaball look). Rendered above the scene,        ##
+   ##  BELOW the octopus. Never participates in collisions.        ##
+   ##  Tweak: PAL.inkBlur ↑ gooier · CFG.INK_CAP ↓ cheaper         ##
+   ------------------------------------------------------------------ */
+function drawInk(vw, SD, shx, shy) {
+  if (!world || !world.ink.length) return;
+  inkCtx.setTransform(1, 0, 0, 1, 0, 0);
+  inkCtx.clearRect(0, 0, inkCv.width, inkCv.height);
+  world.ink.forEach(function (p) {
+    var px = (p.x - world.dist) * SD, py = p.y * SD, r = p.r * SD;
+    if (px < -60 * SD || px > (vw + 60) * SD) return;
+    var a = Math.min(1, (p.age / p.total) * 6, p.total - p.age > 0.45 ? 1 : (p.total - p.age) / 0.45);
+    inkCtx.globalAlpha = 0.85 * a;
+    inkCtx.fillStyle = "rgb(" + PAL.ink + ")";
+    inkCtx.beginPath(); inkCtx.arc(px, py, r, 0, 7); inkCtx.fill();
+  });
+  inkCtx.globalAlpha = 1;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  if (canFilter) ctx.filter = "blur(" + (PAL.inkBlur * SD) + "px)";
+  ctx.drawImage(inkCv, shx, shy);
+  ctx.restore();
+}
+
+/* ------------------------------------------------------------------
+   ##  [OCTOPUS]  kawaii squid player: drawing + procedural        ##
+   ##  animation (squash/stretch, tentacle trail, blink, tilt).   ##
+   ##  All animation driven by animT/velocities → frozen on pause. ##
+   ------------------------------------------------------------------ */
+var octoVis = { rot: 0, sq: 0, blinkTimer: 2, blink: 0 };
+
+function updateOctoVis(dt) {
+  if (!world) return;
+  var o = world.octo, sp = world.speed || 170;
+  // tilt toward the direction of travel (smoothed)
+  var target = Math.max(-0.9, Math.min(1.1, Math.atan2(o.vy, sp * 0.9)));
+  octoVis.rot += (target - octoVis.rot) * Math.min(1, dt * 10);
+  // flap squash decays → jet-propulsion stretchy feel
+  octoVis.sq = Math.max(0, octoVis.sq - dt * 4.5);
+  // random blinking
+  octoVis.blinkTimer -= dt;
+  if (octoVis.blinkTimer <= 0) { octoVis.blink = 0.12; octoVis.blinkTimer = 1.8 + Math.random() * 3.4; }
+  octoVis.blink = Math.max(0, octoVis.blink - dt);
+}
+
+function drawOcto() {
+  if (!world) return;
+  var o = world.octo, dead = world.status === "dead";
+  if (dead && shake <= 0.05 && world.ink.length === 0) return;   // fully poofed
+  var sq = octoVis.sq, sx = 1 + 0.20 * sq, sy = 1 - 0.26 * sq;   // squash on flap
+  ctx.save();
+  ctx.translate(CFG.OCTO_X, o.y);
+  ctx.rotate(octoVis.rot);
+  ctx.scale(sx, sy);
+
+  // --- 8 wiggling tentacles, drawn behind the mantle ---
+  var trail = Math.max(-14, Math.min(16, -o.vy * 0.035));         // rise → tentacles droop
+  for (var i = 0; i < 8; i++) {
+    var bx = -14 + i * 4;                                          // base points under the head
+    var wig = Math.sin(animT * 5.5 + i * 0.85 + Math.abs(o.vy) * 0.004) * (3 + i % 3);
+    var tipX = bx * 0.45 - 9 + wig * 0.9, tipY = 26 + trail + wig;
+    var ctrlX = bx * 0.75 - 4 + wig * 0.4, ctrlY = 16 + trail * 0.4;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = hexA(PAL.tentacle, 0.95); ctx.lineWidth = 5.2 - (i % 2);
+    ctx.beginPath(); ctx.moveTo(bx * 0.6, 8); ctx.quadraticCurveTo(ctrlX, ctrlY, tipX, tipY); ctx.stroke();
+    ctx.strokeStyle = hexA(PAL.tentacleIn, 0.8); ctx.lineWidth = 1.8;
+    ctx.beginPath(); ctx.moveTo(bx * 0.6, 9); ctx.quadraticCurveTo(ctrlX, ctrlY, tipX, tipY); ctx.stroke();
+    // suction dot at the tip
+    ctx.fillStyle = hexA(PAL.tentacleIn, 0.9);
+    ctx.beginPath(); ctx.arc(tipX, tipY, 1.4, 0, 7); ctx.fill();
+  }
+
+  // --- mantle: pastel pink→orange→purple gradient with soft outline ---
+  var bg = ctx.createRadialGradient(4, -8, 4, 0, 0, 24);
+  bg.addColorStop(0, PAL.octoTop); bg.addColorStop(0.55, PAL.octoMid); bg.addColorStop(1, PAL.octoLow);
+  ctx.fillStyle = bg;
+  ctx.beginPath(); ctx.ellipse(0, -2, 20, 18, 0, 0, 7); ctx.fill();
+  ctx.strokeStyle = PAL.octoOutline; ctx.lineWidth = 1.6; ctx.stroke();
+  // glossy dome highlight
+  ctx.fillStyle = "rgba(255,255,255,.35)";
+  ctx.beginPath(); ctx.ellipse(-6, -12, 7, 4, -0.5, 0, 7); ctx.fill();
+
+  // --- face ---
+  var look = Math.max(-1, Math.min(1, o.vy / 420));
+  var openF = octoVis.blink > 0 ? 0.12 : 1;                        // blink: eyes flatten
+  [-1, 1].forEach(function (side, k) {
+    var ex = 5 + k * 11, ey = -3;
+    if (dead) {                                                    // dizzy X eyes
+      ctx.strokeStyle = PAL.pupil; ctx.lineWidth = 2.4; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(ex - 4, ey - 4); ctx.lineTo(ex + 4, ey + 4);
+      ctx.moveTo(ex + 4, ey - 4); ctx.lineTo(ex - 4, ey + 4); ctx.stroke();
+      return;
+    }
+    ctx.fillStyle = PAL.eyeWhite;
+    ctx.beginPath(); ctx.ellipse(ex, ey, 6.2, 7.2 * openF, 0, 0, 7); ctx.fill();
+    ctx.strokeStyle = "rgba(90,40,120,.25)"; ctx.lineWidth = 1; ctx.stroke();
+    if (openF > 0.5) {
+      ctx.fillStyle = PAL.pupil;
+      ctx.beginPath(); ctx.arc(ex + 1, ey + look * 2, 3.4, 0, 7); ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.beginPath(); ctx.arc(ex - 0.2, ey - 1.6 + look, 1.5, 0, 7); ctx.fill();
+    } else {                                                       // closed lash line
+      ctx.strokeStyle = PAL.pupil; ctx.lineWidth = 1.8;
+      ctx.beginPath(); ctx.moveTo(ex - 4, ey); ctx.lineTo(ex + 4, ey); ctx.stroke();
+    }
+  });
+  // blush cheeks
+  ctx.fillStyle = PAL.blush;
+  ctx.beginPath(); ctx.arc(2, 5, 3.2, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(19, 5, 3.2, 0, 7); ctx.fill();
+  // smile (wavy frown when dizzy)
+  ctx.strokeStyle = PAL.pupil; ctx.lineWidth = 1.8; ctx.lineCap = "round";
+  ctx.beginPath();
+  if (dead) { ctx.arc(10.5, 9.5, 3, 0, 7); ctx.stroke(); }
+  else { ctx.arc(10.5, 5.5, 4, Math.PI * 0.2, Math.PI * 0.8); ctx.stroke(); }
+
+  ctx.restore();
+}
+
+/* ------------------------------------------------------------------
+   ##  [AUDIO]  WebAudio music + sfx — all generated, zero files  ##
+   ##  Gentle underwater pad + filtered-noise "current" + a        ##
+   ##  distant whale now and then. Bloop on flap, tick on harden,  ##
+   ##  low blub on death. Music SUSPENDS with the AudioContext     ##
+   ##  while paused (see [PAUSE]).                                 ##
+   ------------------------------------------------------------------ */
+var AC = null, musicGain = null, sfxGain = null, padOscs = [], whaleTimer = null;
+function ensureAC() {
+  if (AC) return AC;
+  AC = new (window.AudioContext || window.webkitAudioContext)();
+  musicGain = AC.createGain(); musicGain.gain.value = 0; musicGain.connect(AC.destination);
+  sfxGain = AC.createGain(); sfxGain.gain.value = 1; sfxGain.connect(AC.destination);
+  return AC;
+}
+function startMusic() {
+  if (!AC || padOscs.length) return;
+  var now = AC.currentTime;
+  musicGain.gain.setTargetAtTime(soundOn ? 0.9 : 0, now, 1.5);
+  // 1. water current: looped filtered noise
+  var len = AC.sampleRate * 2, buf = AC.createBuffer(1, len, AC.sampleRate), d = buf.getChannelData(0);
+  for (var i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * 0.5;
+  var noise = AC.createBufferSource(); noise.buffer = buf; noise.loop = true;
+  var lp = AC.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 420; lp.Q.value = 0.6;
+  var ng = AC.createGain(); ng.gain.value = 0.05;
+  noise.connect(lp); lp.connect(ng); ng.connect(musicGain); noise.start();
+  // 2. slow shimmering pad (Am add9-ish), drifting root every ~14 s
+  var roots = [98, 110, 130.81, 146.83];
+  var rels = [1, 1.5, 2, 2.5, 3];
+  rels.forEach(function (r, k) {
+    var o = AC.createOscillator(); o.type = k === rels.length - 1 ? "sine" : "triangle";
+    o.frequency.value = roots[0] * r;
+    var g = AC.createGain(); g.gain.value = 0.035 - k * 0.004;
+    var lfo = AC.createOscillator(); lfo.frequency.value = 0.06 + k * 0.017;
+    var lg = AC.createGain(); lg.gain.value = g.gain.value * 0.5;
+    lfo.connect(lg); lg.connect(g.gain);
+    o.connect(g); g.connect(musicGain); o.start();
+    padOscs.push({ o: o, lfo: lfo });
+  });
+  setInterval(function () {
+    if (paused() || !soundOn || AC.state !== "running") return;
+    var f = roots[Math.floor(Math.random() * roots.length)];
+    padOscs.forEach(function (p, k) {
+      p.o.frequency.setTargetAtTime(f * rels[k], AC.currentTime, 4);
+    });
+    if (Math.random() < 0.4) whale();
+  }, 14000);
+}
+function whale() {                                    // distant, lonely, lovely
+  var t = AC.currentTime, o = AC.createOscillator(), g = AC.createGain(), vib = AC.createOscillator(), vg = AC.createGain();
+  o.type = "sine"; o.frequency.setValueAtTime(210, t);
+  o.frequency.exponentialRampToValueAtTime(115, t + 3.2);
+  vib.frequency.value = 5.5; vg.gain.value = 4; vib.connect(vg); vg.connect(o.frequency);
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.06, t + 1);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 3.6);
+  o.connect(g); g.connect(musicGain);
+  o.start(t); vib.start(t); o.stop(t + 3.7); vib.stop(t + 3.7);
+}
+function blip(f0, f1, dur, gain, type, dest) {
+  if (!soundOn || !AC || AC.state !== "running" || paused()) return;
+  var t = AC.currentTime, o = AC.createOscillator(), g = AC.createGain();
+  o.type = type || "sine";
+  o.frequency.setValueAtTime(f0, t);
+  o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
+  g.gain.setValueAtTime(gain, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(dest || sfxGain); o.start(t); o.stop(t + dur + 0.02);
+}
+function sfxFlap()  { blip(640, 185, 0.16, 0.16, "sine"); blip(320, 120, 0.12, 0.08, "triangle"); } // soft jet "bloop"
+function sfxSolid() { blip(950, 1300, 0.06, 0.05, "sine"); }
+function sfxDie()   { blip(140, 45, 0.5, 0.22, "sawtooth"); blip(420, 90, 0.3, 0.1, "sine"); }
+function sfxPause() { blip(500, 350, 0.09, 0.07, "sine"); }
+
+/* ------------------------------------------------------------------
+   ##  [PAUSE]  Pause freezes physics, ink, ambient animation and ##
+   ##  the AudioContext together. The rAF loop keeps updating      ##
+   ##  lastT every frame, so resuming never re-applies the         ##
+   ##  elapsed-as-paused time (no time-jump).                       ##
+   ##  Triggers: ⏸ button · P · Esc · tab blur/hidden.              ##
+   ------------------------------------------------------------------ */
+var pauseEl = document.getElementById("pauseScreen");
+var pauseBtn = document.getElementById("pauseBtn");
+function paused() { return world && world.status === "paused"; }
+function togglePause() {
+  if (!world || (world.status !== "flying" && world.status !== "paused")) return;
+  if (world.status === "flying") {
+    world.status = "paused";
+    pauseEl.classList.remove("hidden");
+    pauseBtn.innerHTML = "&#9654;";                     // ▶
+    pauseBtn.title = "Resume (P / Esc)";
+    if (AC && AC.state === "running") AC.suspend();     // music + timers halt
+  } else {
+    world.status = "flying";
+    pauseEl.classList.add("hidden");
+    pauseBtn.innerHTML = "&#9208;";                     // ⏸
+    pauseBtn.title = "Pause (P / Esc)";
+    if (AC && AC.state === "suspended") AC.resume();
+  }
+  sfxPause();
+}
+function autoPause() { if (world && world.status === "flying") togglePause(); }
+window.addEventListener("blur", autoPause);
+document.addEventListener("visibilitychange", function () { if (document.hidden) autoPause(); });
+pauseBtn.addEventListener("click", togglePause);
+document.getElementById("resumeBtn").addEventListener("click", togglePause);
+
+/* ------------------------------------------------------------------
+   ##  [GLUE]  sizing, state transitions, input, frame loop       ##
+   ------------------------------------------------------------------ */
+var startEl = document.getElementById("startScreen");
+var overEl = document.getElementById("overScreen");
+var distEl = document.getElementById("dist");
+var bestEl = document.getElementById("best");
+bestEl.textContent = best + " m";
+
+function resize() {
+  dpr = Math.min(2, window.devicePixelRatio || 1);
+  W = canvas.clientWidth; H = canvas.clientHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  scale = Math.max(H / CFG.H, 1);
+  inkCv.width = canvas.width; inkCv.height = canvas.height;
+  if (world) world.worldW = W / (H / CFG.H);
+  seedAmbient(W / (H / CFG.H));
+}
+window.addEventListener("resize", resize);
+
+function newRun() {
+  ensureAC();
+  if (AC.state === "suspended") AC.resume();
+  startMusic();
+  world = E.create({ seed: (Date.now() & 0xffff), worldW: W / (H / CFG.H) });
+  world.status = "flying";
+  octoVis = { rot: 0, sq: 0, blinkTimer: 2, blink: 0 };
+  poofRings.length = 0;
+  startEl.classList.add("hidden"); overEl.classList.add("hidden"); pauseEl.classList.add("hidden");
+  pauseBtn.innerHTML = "&#9208;";
+}
+function gameOver() {
+  var m = E.meters(world), isBest = m > best;
+  if (isBest) { best = m; localStorage.setItem(bestKey, String(best)); }
+  document.getElementById("finalDist").textContent = m + " m";
+  document.getElementById("finalBest").textContent = best + " m";
+  bestEl.textContent = best + " m";
+  document.getElementById("newBest").classList.toggle("hidden", !isBest);
+  var titles = { ceiling: "bonked the rocks", floor: "kissed the seabed", kelp: "tangled" };
+  var whys = {
+    ceiling: "the coral ceiling claimed you",
+    floor: "the seafloor this time",
+    kelp: "your own kelp caught you",
+  };
+  document.getElementById("deathTitle").textContent = titles[world.deadCause] || "tangled";
+  document.getElementById("deathWhy").textContent = whys[world.deadCause] || "";
+  overEl.classList.remove("hidden");
+  sfxDie(); shake = 0.4;
+  poofRings.push({ t: 0 });                              // little death "poof"
+}
+
+function doFlap() {
+  if (!world || world.status !== "flying") return;
+  E.flap(world);
+  flapFx = 0.16; octoVis.sq = 1;                          // squash & stretch trigger
+  sfxFlap();
+}
+
+canvas.addEventListener("pointerdown", function (e) { e.preventDefault(); doFlap(); });
+window.addEventListener("keydown", function (e) {
+  if (e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") {
+    e.preventDefault();
+    if (world && world.status === "dead") return;         // restart stays button-driven
+    doFlap();
+  } else if (e.code === "KeyP" || e.code === "Escape") {
+    togglePause();
+  }
+});
+document.getElementById("playBtn").addEventListener("click", newRun);
+document.getElementById("againBtn").addEventListener("click", newRun);
+var musicBtn = document.getElementById("musicBtn");
+function syncSoundBtn() { musicBtn.classList.toggle("off", !soundOn); }
+musicBtn.addEventListener("click", function () {
+  soundOn = !soundOn;
+  localStorage.setItem(soundKey, soundOn ? "on" : "off");
+  syncSoundBtn();
+  if (soundOn) { ensureAC(); if (AC.state === "suspended") AC.resume(); startMusic();
+                 if (musicGain) musicGain.gain.setTargetAtTime(0.9, AC.currentTime, 0.8); }
+  else if (musicGain) { musicGain.gain.setTargetAtTime(0, AC.currentTime, 0.4); }
+});
+syncSoundBtn();
+
+function draw() {
+  var unit = H / CFG.H, SD = dpr * unit;
+  ctx.setTransform(SD, 0, 0, SD, 0, 0);
+  var vw = W / unit;
+  var shx = shake > 0 ? (Math.random() - 0.5) * 8 * shake * SD : 0;
+  var shy = shake > 0 ? (Math.random() - 0.5) * 8 * shake * SD : 0;
+  ctx.save(); ctx.translate(shx / SD, shy / SD);
+
+  drawBackground(vw);
+  if (world) {
+    var diff = Math.min(1, world.dist / (CFG.RAMP * 2));
+    drawWalls(vw, diff);
+    drawCaustics(vw);
+    drawStalks(vw);
+    drawInk(vw, SD, shx, shy);                           // above water, below octo
+    drawOcto();
+    // death poof rings
+    poofRings.forEach(function (r) {
+      var k = r.t / 0.6;
+      ctx.strokeStyle = "rgba(255,255,255," + (0.5 * (1 - k)) + ")";
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(CFG.OCTO_X, world.octo.y, 12 + 60 * k, 0, 7); ctx.stroke();
+    });
+  }
+  drawVignette(vw);
+  ctx.restore();
+
+  if (world) distEl.textContent = E.meters(world) + " m";
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+function frame(ts) {
+  requestAnimationFrame(frame);
+  var dt = Math.min(0.033, (ts - lastT) / 1000 || 0.016);
+  lastT = ts;                                             // keeps resume jump-free
+  var live = world && world.status === "flying";
+  if (live) {
+    animT += dt;
+    E.step(world, dt);
+    updateAmbient(dt, W / (H / CFG.H), world.speed);
+    updateOctoVis(dt);
+    if (flapFx > 0) flapFx -= dt;
+    if (world.status === "dead") gameOver();
+  } else if (world && world.status === "dead") {          // death anims keep playing
+    animT += dt;
+    updateAmbient(dt, W / (H / CFG.H), 0);
+    E.updateInk(world, dt);
+  } else if (!world) {                                    // start screen stays alive
+    animT += dt;
+    updateAmbient(dt, W / (H / CFG.H), 24);
+  }
+  if (shake > 0) shake = Math.max(0, shake - dt);
+  draw();
+}
+
+resize();
+world = null;
+requestAnimationFrame(frame);
+
+return E;   // browser global SquidInk is set by the wrapper
+});
+</script>
+<script src="AdsBridge.js"></script>
+<script src="ads-integration.js"></script>
+</body>
+</html>
