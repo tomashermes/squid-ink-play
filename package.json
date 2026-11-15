@@ -4,7 +4,7 @@
   "private": true,
   "description": "Squid Ink — Android/Google Play wrapper (Capacitor 8) with AdMob test-ads seam",
   "scripts": {
-    "sync-web": "cp ../squid-ink/index.html www/index.html && sed -i 's#</body>#<script src=\"AdsBridge.js\"></script>\\n<script src=\"ads-integration.js\"></script>\\n</body>#' www/index.html && npx cap sync android",
+    "sync-web": "cp ../squid-ink/index.html www/index.html && sed -i 's#</body>#<script src=\\\"audio-theme.js\\\"></script>\\n<script src=\\\"AdsBridge.js\\\"></script>\\n<script src=\\\"ads-integration.js\\\"></script>\\n</body>#' www/index.html && npx cap sync android",
     "build": "cd android && ./gradlew assembleDebug",
     "bundle": "cd android && ./gradlew bundleRelease"
   },
