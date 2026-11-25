@@ -104,10 +104,17 @@ canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: 
     <h1>Squid <em>Ink</em></h1>
     <p class="tagline">the Ink Flight makeover &mdash; flap through the coral tunnel</p>
     <ul class="howto">
+      <li><b>Press Space</b> (or tap / Dive) to start &mdash; you glide safely for a heartbeat
+          before the current takes hold, so no early falls and no accidental jumps.</li>
       <li><b>Tap / click / Space</b> &mdash; jet-propel upward. Every flap puffs harmless ink behind you.</li>
-      <li>Fly lazy: flap after flap <b>at the same height</b>, and each one hangs a <span class="glow">glowing kelp stalactite</span> about two seconds ahead, exactly where you keep returning.</li>
-      <li><span class="wet">Translucent = wet</span> and harmless; after a moment it <b>hardens</b> &mdash; solid kelp kills like the rocks &mdash; then shrinks and dissolves away.</li>
-      <li>Rule of the squid: <b>vary your height and you grow nothing.</b> Dodge the coral tunnel&hellip; and your own habits.</li>
+      <li>Fly lazy: flap after flap <b>at the same height</b>, and each one casts a
+          <span class="glow">fisherman's net</span> about two seconds ahead, exactly where you keep returning.</li>
+      <li><span class="wet">Translucent = still being cast</span> and harmless; then the corks snap and it
+          <b>sets solid</b> &mdash; a set net snags you like the rocks &mdash; before it frays away.</li>
+      <li><span class="glow">Catch a glowing fish</span> on the way and it harpoons you forward &mdash;
+          a strong surge, so gaining ground never depends on a perfect jump.</li>
+      <li>Rule of the squid: <b>vary your height and you cast nothing.</b> Dodge the coral tunnel&hellip;
+          and your own habits.</li>
       <li><b>P / Esc</b> pauses &mdash; it also auto-pauses when you switch tabs.</li>
     </ul>
     <button id="playBtn" class="big">Dive</button>
@@ -115,8 +122,8 @@ canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: 
   </div>
 
   <div id="overScreen" class="overlay hidden">
-    <h1 id="deathTitle">tangled</h1>
-    <p class="tagline" id="deathWhy">your own kelp caught you</p>
+    <h1 id="deathTitle">netted</h1>
+    <p class="tagline" id="deathWhy">the net you cast snared you</p>
     <p class="score"><span id="finalDist">0 m</span> <em class="quiet">best <span id="finalBest">0 m</span></em> <span id="newBest" class="badge hidden">new best!</span></p>
     <button id="againBtn" class="big">Dive again</button>
     <p class="quiet">or just close the tab &mdash; the sea will keep no secrets of you</p>
@@ -130,12 +137,13 @@ canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: 
 </div>
 
 <script>
-/*  Squid Ink — v2 of Ink Flight. Single self-contained file.
+/*  Squid Ink — v2 of Ink Flight (v2.1: organic reefs, net traps,
+    boost fish, safe start-glide). Single self-contained file.
     Layout of this script:
-      [ENGINE]      pure physics/tunnel/kelp/ink logic — no DOM, Node-testable
+      [ENGINE]      pure physics/tunnel/net/fish/ink logic — no DOM, Node-testable
       [PALETTE]     every colour constant, one place
-      [SCENE]       underwater background: gradient, rays, caustics, life
-      [WALLS]       coral cave walls + decorations
+      [SCENE]       underwater background: gradient, rays, caustics, shoals
+      [WALLS]       organic coral cave walls, dunes, sunken treasure
       [OCTOPUS]     kawaii player drawing & animation
       [INK PUFFS]   cosmetic ink particle system
       [AUDIO]       WebAudio music + sfx (generated, no files)
@@ -169,6 +177,15 @@ var CFG = {
   /* --- tunnel --- */
   COL_W: 16,           // sampling column width (px)
   SPEED0: 170, SPEED_MAX: 300, RAMP: 2400,  // scroll speed + difficulty ramp
+  /* --- v2.1: safe start-hold + boost fish --- */
+  HOLD_T: 1.0,         // seconds held safely in place after Space / Dive
+  FISH_FIRST: 150,     // meters of world-x before the first boost fish appears
+  FISH_GAP: 230, FISH_GAP_VAR: 260,   // px between boost fish (randomised)
+  BOOST_T: 1.1,        // surge duration in seconds
+  BOOST_MULT: 2.35,    // scroll speed multiplier while surging
+  BOOST_CAP: 660,      // hard cap so boosts never spiral
+  BOOST_LIFT: 170,     // upward nudge px/s on catch (the ride, not a fall)
+  SPARK_N: 12, SPARK_CAP: 130,        // cosmetic catch sparks
   /* --- ink puff particle system (COSMETIC ONLY) --- */
   INK_MIN: 6, INK_MAX_COUNT: 12,             // blobs emitted per flap
   INK_CAP: 260,                              // hard cap for performance
@@ -223,14 +240,76 @@ function create(opts) {
     t: 0,
     speed: CFG.SPEED0,
     octo: { y: CFG.H / 2, vy: 0 },
-    strokes: [],   // kelp: {x, y, depth, born, bot} in WORLD coords
+    strokes: [],   // net traps: {x, y, depth, born, bot} in WORLD coords
     ink: [],       // cosmetic ink blobs: {x,y,vx,vy,r,r0,gr,age,total}
-    status: "ready",   // ready | flying | dead | paused
+    fish: [],      // boost fish: {x, y, r, vx, ph, hue, caught, spin, hookAt}
+    sparks: [],    // cosmetic catch sparks: {x, y, vx, vy, age, total}
+    status: "ready",   // ready | hold | flying | dead | paused
+    hold: 0,           // seconds left of the safe start-hold
+    boost: 0,          // seconds left of a fish-catch surge
+    _fishAt: CFG.FISH_FIRST,   // world dist of the next boost fish spawn
     deadCause: null,
     _lastFlapY: undefined,
     _rand: rand,
     _tunnel: tunnel,
   };
+}
+
+/* --- the v2.1 start flow: Space/tap arms the run, then a 1 s safe glide
+   locks the player in place (no gravity, no scroll, no accidental flap)
+   before normal gameplay begins. --- */
+function startHold(w) {
+  if (w.status !== "ready") return w;
+  w.status = "hold";
+  w.hold = CFG.HOLD_T;
+  return w;
+}
+
+/* --- boost fish: spawn AHEAD of the viewport edge (never on the player),
+   always inside the corridor with a margin — catch one and it harpoons
+   you forward. One boost per fish: caught fish flee and never re-trigger. --- */
+function spawnFish(w) {
+  var x = octoWX(w) + w.worldW + 60 + w._rand() * 120;
+  var tw = w._tunnel(x, difficulty(w));
+  var mid = (tw.top + tw.bot) / 2, half = (tw.bot - tw.top) / 2;
+  var y = mid + (w._rand() - 0.5) * 2 * Math.max(24, half - 36);
+  y = Math.max(tw.top + CFG.R + 16, Math.min(tw.bot - CFG.R - 16, y));
+  w.fish.push({
+    x: x, y: y, r: 9 + w._rand() * 4,
+    vx: -(60 + w._rand() * 110),        // swims against the current
+    ph: w._rand() * 7, hue: Math.floor(w._rand() * 3),
+    caught: false, spin: 0, hookAt: 0,
+  });
+  if (w.fish.length > 14) w.fish.shift();
+}
+
+function catchFish(w, f) {
+  f.caught = true; f.hookAt = w.t;
+  w.boost = CFG.BOOST_T;                          // fresh surge (one per fish)
+  w.octo.vy = Math.min(w.octo.vy, -CFG.BOOST_LIFT);  // the ride tilts upward
+  for (var k = 0; k < CFG.SPARK_N; k++) {
+    var a = w._rand() * Math.PI * 2, sp = 50 + w._rand() * 160;
+    w.sparks.push({ x: f.x, y: f.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+                    age: 0, total: 0.4 + w._rand() * 0.35 });
+  }
+  while (w.sparks.length > CFG.SPARK_CAP) w.sparks.shift();
+}
+
+function updateFish(w, dt) {
+  var bx = octoWX(w);
+  for (var i = w.fish.length - 1; i >= 0; i--) {
+    var f = w.fish[i];
+    if (f.caught) {                                // flee the scene, no re-boost
+      f.x -= 460 * dt; f.spin += dt * 13;
+      if (w.t - f.hookAt > 1.5 || f.x < w.dist - 140) w.fish.splice(i, 1);
+      continue;
+    }
+    f.x += f.vx * dt;
+    if (f.x < w.dist - 140) { w.fish.splice(i, 1); continue; }
+    if (Math.abs(bx - f.x) < CFG.R + f.r + 5 && Math.abs(w.octo.y - f.y) < CFG.R + f.r + 3) {
+      catchFish(w, f);
+    }
+  }
 }
 
 function octoWX(w) { return w.dist + CFG.OCTO_X; }
@@ -267,6 +346,16 @@ function updateInk(w, dt) {
     p.y += p.vy * dt;
     p.r = Math.min(p.r0 * CFG.INK_GROW_MAX, p.r + p.gr * dt);
   }
+  for (var i = w.sparks.length - 1; i >= 0; i--) {   // catch sparks: bright, short-lived
+    var q = w.sparks[i];
+    q.age += dt;
+    if (q.age >= q.total) { w.sparks.splice(i, 1); continue; }
+    q.vx -= q.vx * 3 * dt;
+    q.vy -= q.vy * 3 * dt;
+    q.vy += 40 * dt;
+    q.x += q.vx * dt;
+    q.y += q.vy * dt;
+  }
 }
 
 /* --- flap: jet impulse + ink puff + the v1 "lazy hovering" rule --- */
@@ -277,7 +366,7 @@ function flap(w) {
   w._lastFlapY = w.octo.y;
   emitInkPuff(w, octoWX(w) - 16, w.octo.y + 4);   // cosmetic, never collides
   // Design law (kept from Ink Flight): a flap that CHANGES your altitude grows
-  // nothing. Repeated same-height flapping hangs a shrinking kelp stalactite
+  // nothing. Repeated same-height flapping casts a fisherman's net
   // SPRAY_T seconds-of-scroll ahead, at the height you keep returning to.
   if (prevY === undefined || Math.abs(w.octo.y - prevY) >= 36) return;
   var xArr = octoWX(w) + w.speed * CFG.SPRAY_T;
@@ -288,27 +377,44 @@ function flap(w) {
 }
 
 function step(w, dt) {
+  if (w.status === "hold") {            // safe glide: locked in place, only the timer runs
+    w.t += dt;
+    w.hold -= dt;
+    w.octo.y = CFG.H / 2 + Math.sin(w.t * 6) * 6;   // gentle idle bob (never leaves centre)
+    if (w.hold <= 0) { w.hold = 0; w.status = "flying"; }
+    return;
+  }
   if (w.status !== "flying") return;   // paused / dead / ready: physics frozen
   w.t += dt;
-  w.speed = Math.min(CFG.SPEED_MAX, CFG.SPEED0 + w.dist / CFG.RAMP * (CFG.SPEED_MAX - CFG.SPEED0));
+  if (w.boost > 0) w.boost = Math.max(0, w.boost - dt);
+  var boosting = w.boost > 0;
+  var ramp = CFG.SPEED0 + w.dist / CFG.RAMP * (CFG.SPEED_MAX - CFG.SPEED0);
+  w.speed = boosting ? Math.min(CFG.BOOST_CAP, ramp * CFG.BOOST_MULT) : ramp;
   w.dist += w.speed * dt;
 
-  w.octo.vy += CFG.GRAV * dt;
+  w.octo.vy += CFG.GRAV * (boosting ? 0.62 : 1) * dt;   // you sink slower while surging
   w.octo.y += w.octo.vy * dt;
   var bx = octoWX(w);
 
-  // kelp lifecycle: wet → solid segment from s.y to s.y+len kills on contact
+  // net-trap lifecycle: cast → set (the "hardens" phase) kills on contact
   for (var i = w.strokes.length - 1; i >= 0; i--) {
     var s = w.strokes[i];
     var age = w.t - s.born;
     if (age > CFG.FADE_T || s.x < w.dist - 80) { w.strokes.splice(i, 1); continue; }
-    if (age < CFG.SOLID_T) continue;                       // wet: pass through
+    if (age < CFG.SOLID_T) continue;                       // being cast: pass through
     var len = s.depth * Math.max(0.15, 1 - (age - CFG.SOLID_T) / (CFG.FADE_T - CFG.SOLID_T));
     var y2 = Math.min(s.bot - 4, s.y + len);
     if (Math.abs(bx - s.x) < CFG.R + 6 && w.octo.y + CFG.R > s.y && w.octo.y - CFG.R < y2) {
       return die(w, "kelp", w.octo.y);
     }
   }
+
+  // boost fish: spawn by world distance, always ahead of the right edge
+  if (w.dist >= w._fishAt) {
+    spawnFish(w);
+    w._fishAt = w.dist + CFG.FISH_GAP + w._rand() * CFG.FISH_GAP_VAR;
+  }
+  updateFish(w, dt);
 
   var tw = w._tunnel(bx, difficulty(w));
   if (w.octo.y - CFG.R < tw.top) return die(w, "ceiling", tw.top);
@@ -345,7 +451,8 @@ function meters(w) { return Math.floor(w.dist / 12); }
 
 if (typeof document === "undefined") {          // we're in Node (tests)
   return { CFG: CFG, create: create, flap: flap, step: step, die: die,
-           updateInk: updateInk, octoWX: octoWX, meters: meters, mulberry32: mulberry32 };
+           updateInk: updateInk, octoWX: octoWX, meters: meters, mulberry32: mulberry32,
+           startHold: startHold, spawnFish: spawnFish, catchFish: catchFish };
 }
 
 /* ---------------------------------------------------------------
@@ -366,6 +473,20 @@ var PAL = {
   // ink
   ink: "10,8,40",                                     // rgb() of a dark squid-ink navy
   inkBlur: 4,                                          // px (design scale) — gooey merge
+  // v2.1 — fisherman's NET hazard (re-skin of the kelp stalactites)
+  netRope: "#C74B7B",                                  // hostile rose rope
+  netRopeHi: "rgba(255,214,228,.55)",
+  netGhost: "rgba(150,255,225,",                       // + alpha + ")" — being-cast preview
+  cork: "#FF9E6D", corkDark: "#C8563C", sink: "#2B2140",
+  // v2.1 — boost fish (interactive, glowing): [glow, body] pairs
+  boostFish: [["#7DE8D2", "#1FA08C"], ["#FFD37E", "#E8963C"], ["#B9A2FF", "#7A5CE0"]],
+  spark: "255,244,190",                                // rgb of catch sparks
+  streak: "125,232,210",                               // rgb of boost speed-lines
+  // v2.1 — sunken treasure + soft seabed sand
+  chestWood: "#7A4A2E", chestDark: "#5A3320", chestLid: "#8F5A38",
+  chestBand: "#FFCF6E", chestGlow: "rgba(255,214,120,",
+  sandRim: "rgba(160,255,238,.25)",
+  schoolTints: ["rgba(125,232,210,.55)", "rgba(255,158,109,.5)", "rgba(199,125,255,.5)"],
   // octopus: pastel pink → orange → purple
   octoTop: "#FFC9AE", octoMid: "#FF8FC0", octoLow: "#B678E8",
   octoOutline: "rgba(90,40,120,.35)",
@@ -377,7 +498,7 @@ var PAL = {
 };
 
 var E = { CFG: CFG, create: create, flap: flap, step: step, die: die,
-          updateInk: updateInk, octoWX: octoWX, meters: meters };
+          updateInk: updateInk, octoWX: octoWX, meters: meters, startHold: startHold };
 
 /* ------------------------------------------------------------------
    ##  [SCENE]  background, light rays, caustics, ambient life     ##
@@ -403,7 +524,7 @@ var canFilter = (function () {
   catch (e) { return false; }
 })();
 
-var bubbles = [], plankton = [], fish = [], rays = [], poofRings = [];
+var bubbles = [], plankton = [], fish = [], midFish = [], rays = [], poofRings = [];
 function hash1(x) { var s = Math.sin(x * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); }
 
 function seedAmbient(vw) {
@@ -417,6 +538,9 @@ function seedAmbient(vw) {
   for (i = 0; i < 8; i++)
     fish.push({ x: Math.random() * vw * 1.6, y: 70 + Math.random() * 320, s: 6 + Math.random() * 9,
                 spd: 14 + Math.random() * 22, f: 0.35, ph: Math.random() * 7 });
+  for (i = 0; i < 9; i++)                          // nearer shoal, stronger parallax
+    midFish.push({ x: Math.random() * vw * 1.5, y: 60 + Math.random() * 340, s: 4 + Math.random() * 5,
+                   spd: 26 + Math.random() * 34, f: 0.6, ph: Math.random() * 7, c: Math.floor(Math.random() * 3) });
   for (i = 0; i < 5; i++) rays.push({ x: i * (vw / 5) + Math.random() * 60, w: 26 + Math.random() * 40, ph: Math.random() * 7 });
 }
 
@@ -435,6 +559,10 @@ function updateAmbient(dt, vw, scrollSpeed) {
   for (i = 0; i < fish.length; i++) {                 // tiny background shoal
     var f = fish[i]; f.x -= (f.spd + scrollSpeed * f.f) * dt;
     if (f.x < -60) { f.x = vw + 30 + Math.random() * 200; f.y = 70 + Math.random() * 320; }
+  }
+  for (i = 0; i < midFish.length; i++) {              // nearer shoal (v2.1)
+    var m = midFish[i]; m.x -= (m.spd + scrollSpeed * m.f) * dt;
+    if (m.x < -50) { m.x = vw + 20 + Math.random() * 260; m.y = 60 + Math.random() * 340; }
   }
   for (i = poofRings.length - 1; i >= 0; i--) {       // death rings
     poofRings[i].t += dt; if (poofRings[i].t > 0.6) poofRings.splice(i, 1);
@@ -495,7 +623,27 @@ function drawBackground(vw) {
    ##  Visual bumps only push INTO the rock, never into the safe   ##
    ##  corridor, so the hitboxes (smooth curve) stay honest.       ##
    ------------------------------------------------------------------ */
-function rockBump(wx) { return 3 + 3 * Math.sin(wx / 23) + 2 * Math.sin(wx / 7 + 2); }
+function smoothThrough(pts) {           // NEW subpath curved through points
+  ctx.moveTo(pts[0].x, pts[0].y);
+  smoothCont(pts);
+}
+function smoothCont(pts) {              // continue CURRENT subpath through points
+  for (var i = 1; i < pts.length - 1; i++) {
+    var mx = (pts[i].x + pts[i + 1].x) / 2, my = (pts[i].y + pts[i + 1].y) / 2;
+    ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+  }
+  ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+}
+function roundRect(x, y, w, h, r) {     // path only (fill/stroke by caller)
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+/* soft, rounded seabed swell — long gentle waves, no 7px ripple noise */
+function rockBump(wx) { return 5 + 7 * Math.sin(wx / 37) + 4 * Math.sin(wx / 19 + 1.3); }
 
 function drawWalls(vw, diff) {
   var cols = [], stepPx = CFG.COL_W;
@@ -506,28 +654,32 @@ function drawWalls(vw, diff) {
   var bumpTop = cols.map(function (c) { return Math.max(2, c.top - rockBump(c.wx)); });
   var bumpBot = cols.map(function (c) { return Math.min(CFG.H - 2, c.bot + rockBump(c.wx * 1.3)); });
 
-  // ceiling rock
+  // ceiling rock — smooth coral-cave canopy
   var g1 = ctx.createLinearGradient(0, -20, 0, CFG.H * 0.32);
   g1.addColorStop(0, PAL.ceilCore); g1.addColorStop(0.6, PAL.ceilMid); g1.addColorStop(1, PAL.ceilEdge);
   ctx.fillStyle = g1;
-  ctx.beginPath(); ctx.moveTo(-40, -40);
-  cols.forEach(function (c, k) { ctx.lineTo(c.sx, bumpTop[k]); });
-  ctx.lineTo(vw + 40, -40); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-40, -40); ctx.lineTo(cols[0].sx, bumpTop[0]);
+  smoothCont(cols.map(function (c, k) { return { x: c.sx, y: bumpTop[k] }; }));
+  ctx.lineTo(vw + 40, bumpTop[bumpTop.length - 1]); ctx.lineTo(vw + 40, -40);
+  ctx.closePath(); ctx.fill();
 
-  // floor rock
+  // floor rock — rolling dunes instead of a hard slab
   var g2 = ctx.createLinearGradient(0, CFG.H * 0.66, 0, CFG.H + 20);
   g2.addColorStop(0, PAL.floorEdge); g2.addColorStop(0.45, PAL.floorMid); g2.addColorStop(1, PAL.floorCore);
   ctx.fillStyle = g2;
-  ctx.beginPath(); ctx.moveTo(-40, CFG.H + 40);
-  cols.forEach(function (c, k) { ctx.lineTo(c.sx, bumpBot[k]); });
-  ctx.lineTo(vw + 40, CFG.H + 40); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-40, CFG.H + 40); ctx.lineTo(cols[0].sx, bumpBot[0]);
+  smoothCont(cols.map(function (c, k) { return { x: c.sx, y: bumpBot[k] }; }));
+  ctx.lineTo(vw + 40, bumpBot[bumpBot.length - 1]); ctx.lineTo(vw + 40, CFG.H + 40);
+  ctx.closePath(); ctx.fill();
 
-  // soft glowing outlines on the TRUE collision edges
-  ctx.lineCap = "round";
+  // soft glowing outlines on the TRUE collision edges (hitbox honesty kept)
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
   ctx.strokeStyle = PAL.ceilLine; ctx.lineWidth = 2.5;
-  ctx.beginPath(); cols.forEach(function (c, k) { k ? ctx.lineTo(c.sx, c.top) : ctx.moveTo(c.sx, c.top); }); ctx.stroke();
+  ctx.beginPath(); smoothThrough(cols.map(function (c) { return { x: c.sx, y: c.top }; })); ctx.stroke();
   ctx.strokeStyle = PAL.floorLine;
-  ctx.beginPath(); cols.forEach(function (c, k) { k ? ctx.lineTo(c.sx, c.bot) : ctx.moveTo(c.sx, c.bot); }); ctx.stroke();
+  ctx.beginPath(); smoothThrough(cols.map(function (c) { return { x: c.sx, y: c.bot }; })); ctx.stroke();
+
+  drawEdgeLife(vw, diff, world ? world.dist : 0);
 
   // decorations anchored to the edges, keyed to world-x so they scroll with the rocks
   var cell = 80, w0 = world ? world.dist : 0;
@@ -542,6 +694,86 @@ function drawWalls(vw, diff) {
     var h2 = hash1(wx * 1.7 + 5);
     decorate(sx, t.bot, wx, h2, "floor");
   }
+}
+
+/* organic fringe: coral lobes tangent to the ceiling edge, soft mounds + sand
+   rims on the floor, and sparse sunken treasure. Everything is drawn tangent
+   to (never across) the collision edge, so the hitboxes stay honest. */
+function drawEdgeLife(vw, diff, w0) {
+  var cell = 52;
+  var start = Math.floor((w0 - 60) / cell) * cell, end = w0 + vw + 60;
+  for (var wx = start; wx < end; wx += cell) {
+    var h = hash1(wx * 0.77), h2 = hash1(wx * 1.7 + 13);
+    var sx = wx - w0 + (h2 - 0.5) * 26;
+    if (sx < -70 || sx > vw + 70) continue;
+    var t = world._tunnel(wx, diff);
+    // ceiling: rounded coral blisters hanging tangent to the edge
+    var r = 9 + h * 16;
+    ctx.fillStyle = hexA(PAL.decor[Math.floor(h2 * PAL.decor.length)], 0.5 + h * 0.3);
+    ctx.beginPath(); ctx.arc(sx, t.top - r, r, 0, 7); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,.26)";
+    ctx.beginPath(); ctx.arc(sx - r * 0.3, t.top - r * 1.35, r * 0.3, 0, 7); ctx.fill();
+    var r2 = r * 0.55;                                    // smaller second row
+    ctx.fillStyle = hexA(PAL.ceilEdge, 0.55);
+    ctx.beginPath(); ctx.arc(sx + cell / 2, t.top - r2, r2, 0, 7); ctx.fill();
+    // floor: soft dune domes tangent below the edge, with a pale sand rim
+    var rd = 10 + h2 * 17;
+    ctx.fillStyle = hexA(PAL.floorMid, 0.7);
+    ctx.beginPath(); ctx.arc(sx + 26, t.bot + rd, rd, 0, 7); ctx.fill();
+    ctx.strokeStyle = PAL.sandRim; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(sx + 26, t.bot + rd, rd - 1.5, Math.PI * 1.12, Math.PI * 1.88); ctx.stroke();
+    // pebbles in the sand
+    if (h > 0.62) {
+      ctx.fillStyle = "rgba(140,240,220,.3)";
+      ctx.beginPath(); ctx.arc(sx - 14, t.bot + 5, 1.6 + h * 2, 0, 7); ctx.fill();
+    }
+  }
+  // sunken treasure — sparse, deterministic, half-buried in the seabed
+  var cellC = 230;
+  var c0 = Math.floor((w0 - 100) / cellC) * cellC;
+  for (var wx2 = c0; wx2 < w0 + vw + 100; wx2 += cellC) {
+    var hc = hash1(wx2 * 0.13 + 7);
+    if (hc < 0.6) continue;
+    var sx2 = wx2 - w0 + (hash1(wx2 * 0.9) - 0.5) * 120;
+    if (sx2 < -70 || sx2 > vw + 70) continue;
+    drawChest(sx2, world._tunnel(wx2, diff).bot, wx2, hc);
+  }
+}
+
+function drawChest(sx, bot, wx, hc) {
+  var s = 0.85 + hash1(wx * 0.21) * 0.4;
+  ctx.save();
+  ctx.translate(sx, bot + 12); ctx.scale(s, s);
+  ctx.rotate((hash1(wx * 0.44) - 0.5) * 0.16);
+  // warm glow spilling from the treasure
+  var gl = 0.25 + 0.18 * Math.sin(animT * 1.6 + wx);
+  var g = ctx.createRadialGradient(0, -12, 2, 0, -12, 36);
+  g.addColorStop(0, PAL.chestGlow + gl + ")"); g.addColorStop(1, PAL.chestGlow + "0)");
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, -12, 36, 0, 7); ctx.fill();
+  // chest body (bottom buried in the dune)
+  ctx.fillStyle = PAL.chestWood; roundRect(-17, -14, 34, 27, 4); ctx.fill();
+  ctx.strokeStyle = PAL.chestDark; ctx.lineWidth = 2; ctx.stroke();
+  // domed lid
+  ctx.fillStyle = PAL.chestLid;
+  ctx.beginPath(); ctx.arc(0, -14, 17, Math.PI, 0); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = PAL.chestDark; ctx.stroke();
+  // gold bands
+  ctx.strokeStyle = PAL.chestBand; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(-17, -7); ctx.lineTo(17, -7); ctx.stroke();
+  ctx.beginPath(); ctx.arc(0, -14, 17, Math.PI, 0); ctx.stroke();
+  // coin spill on the sand
+  ctx.fillStyle = PAL.chestBand;
+  for (var k = 0; k < 3; k++) {
+    var cx2 = 14 + hash1(wx + k * 5) * 14, cy2 = 9 + hash1(wx + k) * 4;
+    ctx.beginPath(); ctx.ellipse(cx2, cy2, 3, 1.8, 0, 0, 7); ctx.fill();
+  }
+  // twinkling sparkle above the lid
+  var tw = (Math.sin(animT * 3 + wx) + 1) / 2;
+  ctx.strokeStyle = "rgba(255,255,255," + (0.25 + 0.55 * tw) + ")"; ctx.lineWidth = 1.4;
+  var px2 = -8 + hash1(wx * 1.3) * 20, py2 = -30 - 5 * tw;
+  ctx.beginPath(); ctx.moveTo(px2 - 3, py2); ctx.lineTo(px2 + 3, py2);
+  ctx.moveTo(px2, py2 - 3); ctx.lineTo(px2, py2 + 3); ctx.stroke();
+  ctx.restore();
 }
 
 function decorate(sx, edgeY, wx, h, side) {
@@ -633,10 +865,31 @@ function drawVignette(vw) {
   ctx.fillStyle = g; ctx.fillRect(-20, -20, vw + 40, CFG.H + 40);
 }
 
+/* nearer decorative shoal — tinted little fish swimming in front of the
+   rocks, behind gameplay elements (pure parallax, never interactive) */
+function drawSchool(vw) {
+  midFish.forEach(function (m) {
+    if (m.x < -40 || m.x > vw + 40) return;
+    var wig = Math.sin(animT * 8 + m.ph) * (m.s * 0.28);
+    ctx.fillStyle = PAL.schoolTints[m.c];
+    ctx.save();
+    ctx.translate(m.x, m.y + Math.sin(animT * 1.1 + m.ph) * 6);
+    ctx.beginPath(); ctx.ellipse(0, 0, m.s, m.s * 0.42, 0, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(m.s * 0.65, 0);
+    ctx.lineTo(m.s * 1.35, -m.s * 0.42 + wig); ctx.lineTo(m.s * 1.35, m.s * 0.42 + wig);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "rgba(10,20,50,.5)";
+    ctx.beginPath(); ctx.arc(-m.s * 0.45, -m.s * 0.08, Math.max(0.6, m.s * 0.14), 0, 7); ctx.fill();
+    ctx.restore();
+  });
+}
+
 /* ------------------------------------------------------------------
-   ##  [HEHAZARD→]  the kelp stalactites + tethered aiming line   ##
-   ##  same lifecycle & hitbox as v1's ink drips, new skin:       ##
-   ##  glowing bioluminescent tube-coral hanging from a bulb.     ##
+   ##  [HAZARD→]  the fisherman's nets cast by lazy hovering      ##
+   ##  same lifecycle, timing & hitbox as v2's kelp stalactites:  ##
+   ##  translucent while the net is being CAST, then it SETS      ##
+   ##  solid (corks snap, mesh tightens) and snags on contact.    ##
+   ##  Re-skin only — the "vary your height" rule is untouched.   ##
    ------------------------------------------------------------------ */
 function drawStalks(vw) {
   if (!world) return;
@@ -648,53 +901,162 @@ function drawStalks(vw) {
     var shrink = Math.max(0.15, 1 - Math.max(0, age - CFG.SOLID_T) / (CFG.FADE_T - CFG.SOLID_T));
     var alpha = age > CFG.FADE_T - 0.6 ? Math.max(0, (CFG.FADE_T - age) / 0.6) : 1;
     var len = Math.min(s.bot - 4 - py, s.depth * shrink);
-    var set = PAL.kelpSets[Math.floor(hash1(s.x * 0.37) * PAL.kelpSets.length)];
     ctx.lineCap = "round";
     if (!solid) {
-      // wet preview + the tethered aiming line back to the octopus
+      // being cast: ghost mesh + the tethered aiming line back to the octopus
       ctx.strokeStyle = PAL.tether; ctx.lineWidth = 2; ctx.setLineDash([4, 7]);
       ctx.beginPath(); ctx.moveTo(CFG.OCTO_X, world.octo.y); ctx.lineTo(px, py); ctx.stroke();
       ctx.setLineDash([]);
-      ctx.strokeStyle = PAL.kelpWet + "0.34)"; ctx.lineWidth = 8;
-      ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px, py + len); ctx.stroke();
-      ctx.fillStyle = PAL.kelpWet + "0.34)";
+      drawNet(px, py, len, PAL.netGhost + "0.30)", PAL.netGhost + "0.16)", false, 0.55);
+      ctx.fillStyle = PAL.netGhost + "0.34)";
       ctx.beginPath(); ctx.arc(px, py, 6, 0, 7); ctx.fill();
-      ctx.strokeStyle = PAL.kelpWet + "0.5)"; ctx.lineWidth = 1.5;
+      ctx.strokeStyle = PAL.netGhost + "0.5)"; ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.arc(px, py, 9, 0, 7); ctx.stroke();
     } else {
       ctx.globalAlpha = alpha;
-      // soft bioluminescent halo
-      var hg = ctx.createRadialGradient(px, py, 2, px, py, 20);
-      hg.addColorStop(0, hexA(set[0], 0.30)); hg.addColorStop(1, hexA(set[0], 0));
-      ctx.fillStyle = hg; ctx.beginPath(); ctx.arc(px, py, 20, 0, 7); ctx.fill();
-      // wavy stalk (same rect hitbox as v1's straight drip)
-      var sw = Math.sin(animT * 2 + s.x * 0.02) * 3;
-      var gg = ctx.createLinearGradient(px, py, px, py + len);
-      gg.addColorStop(0, set[0]); gg.addColorStop(1, set[1]);
-      ctx.strokeStyle = gg; ctx.lineWidth = 7;
-      ctx.beginPath(); ctx.moveTo(px, py);
-      ctx.bezierCurveTo(px + sw, py + len * 0.33, px - sw, py + len * 0.66, px + sw * 0.5, py + len);
-      ctx.stroke();
-      ctx.strokeStyle = "rgba(255,255,255,.35)"; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(px - 1.5, py + 3);
-      ctx.bezierCurveTo(px + sw - 1.5, py + len * 0.33, px - sw - 1.5, py + len * 0.66, px + sw * 0.5 - 1.5, py + len);
-      ctx.stroke();
-      // bulb head + tapered glowing tip
-      ctx.fillStyle = set[0];
-      ctx.beginPath(); ctx.arc(px, py, 7.5, 0, 7); ctx.fill();
-      ctx.fillStyle = "rgba(255,255,255,.55)";
-      ctx.beginPath(); ctx.arc(px - 2.4, py - 2.4, 2.6, 0, 7); ctx.fill();
-      ctx.fillStyle = set[1];
-      ctx.beginPath(); ctx.moveTo(px - 3.5 + sw * 0.5, py + len); ctx.lineTo(px + 3.5 + sw * 0.5, py + len);
-      ctx.lineTo(px + sw * 0.5, py + len + 7); ctx.closePath(); ctx.fill();
+      // the moment it sets: a warning pulse so the threat reads clearly
+      if (age < CFG.SOLID_T + 0.3) {
+        var pl = 1 - (age - CFG.SOLID_T) / 0.3;
+        var hg = ctx.createRadialGradient(px, py, 2, px, py, 22);
+        hg.addColorStop(0, "rgba(255,123,156," + (0.35 * pl) + ")");
+        hg.addColorStop(1, "rgba(255,123,156,0)");
+        ctx.fillStyle = hg; ctx.beginPath(); ctx.arc(px, py, 22, 0, 7); ctx.fill();
+      }
+      drawNet(px, py, len, PAL.netRope, PAL.netRopeHi, true, 1);
       ctx.globalAlpha = 1;
     }
     if (!s._sounded && age >= CFG.SOLID_T) { s._sounded = true; sfxSolid(); }
   });
 }
+
+/* one hanging net: top rope with corks, diamond mesh, frayed hem with sinkers.
+   Rect hitbox unchanged (px ± ~8, py..py+len) — the mesh never lies. */
+function drawNet(px, py, len, rope, hi, withFloats, meshA) {
+  var W2 = 15, sway = Math.sin(animT * 2 + px * 0.05) * 3;
+  ctx.save();
+  // mesh clipped to the net's silhouette
+  ctx.beginPath();
+  ctx.moveTo(px - W2 / 2, py); ctx.lineTo(px + W2 / 2, py);
+  ctx.quadraticCurveTo(px + W2 / 2 + sway, py + len * 0.6, px + W2 / 2 - 1 + sway, py + len);
+  ctx.lineTo(px - W2 / 2 - 1 + sway, py + len);
+  ctx.quadraticCurveTo(px - W2 / 2 + sway, py + len * 0.6, px - W2 / 2, py);
+  ctx.closePath(); ctx.clip();
+  ctx.globalAlpha = meshA;
+  ctx.strokeStyle = rope; ctx.lineWidth = 1.4;
+  for (var d = -len - W2; d < len + W2 * 2; d += 6) {       // diamonds
+    ctx.beginPath(); ctx.moveTo(px - W2 / 2 - 8, py + d); ctx.lineTo(px + W2 / 2 + 8, py + d + W2 + 16); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(px - W2 / 2 - 8, py + d + W2 + 16); ctx.lineTo(px + W2 / 2 + 8, py + d); ctx.stroke();
+  }
+  ctx.strokeStyle = hi; ctx.lineWidth = 0.7;                // spine highlight
+  ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px + sway, py + len); ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.restore();
+  // rim ropes (top float line + bottom hem)
+  ctx.strokeStyle = rope; ctx.lineWidth = 2.4; ctx.globalAlpha = meshA;
+  ctx.beginPath(); ctx.moveTo(px - W2 / 2, py); ctx.lineTo(px + W2 / 2, py); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(px - W2 / 2 - 1 + sway, py + len); ctx.lineTo(px + W2 / 2 - 1 + sway, py + len); ctx.stroke();
+  // frayed tassels off the hem
+  ctx.lineWidth = 1.4;
+  for (var k = -1; k <= 1; k++) {
+    var fx = px + k * (W2 / 2.2) + sway, fy = py + len;
+    ctx.beginPath(); ctx.moveTo(fx, fy);
+    ctx.quadraticCurveTo(fx + sway * 0.6, fy + 4, fx + sway + k * 2, fy + 6 + Math.abs(k) * 2); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  if (withFloats) {
+    // corks bobbing on the float line + lead sinkers at the hem
+    ctx.fillStyle = PAL.cork;
+    [-6, 0, 6].forEach(function (o) {
+      ctx.beginPath(); ctx.arc(px + o, py - 2.5, 2.7, 0, 7); ctx.fill();
+    });
+    ctx.fillStyle = PAL.corkDark;
+    ctx.beginPath(); ctx.arc(px, py - 2.5, 2.7, 0.4, Math.PI - 0.4); ctx.fill();
+    ctx.fillStyle = PAL.sink;
+    [-5, 5].forEach(function (o) {
+      ctx.beginPath(); ctx.arc(px + o + sway, py + len + 1.5, 1.8, 0, 7); ctx.fill();
+    });
+  }
+}
 function hexA(hex, a) {           // "#RRGGBB" → "rgba(r,g,b,a)"
   var n = parseInt(hex.slice(1), 16);
   return "rgba(" + (n >> 16 & 255) + "," + (n >> 8 & 255) + "," + (n & 255) + "," + a + ")";
+}
+
+/* ------------------------------------------------------------------
+   ##  [BOOST FISH]  the catchable glowing shoal + surge effects  ##
+   ##  non-lethal, interactive: touch one → strong forward boost. ##
+   ------------------------------------------------------------------ */
+function drawBoostFish(vw) {
+  if (!world) return;
+  world.fish.forEach(function (f) {
+    var px = f.x - world.dist;
+    if (px < -70 || px > vw + 70) return;
+    var set = PAL.boostFish[f.hue % PAL.boostFish.length];
+    var wig = Math.sin(animT * 9 + f.ph) * 2;
+    ctx.save();
+    ctx.translate(px, f.y + Math.sin(animT * 2.2 + f.ph) * 5);
+    if (f.caught) {
+      ctx.rotate(-f.spin);
+      ctx.globalAlpha = Math.max(0, 1 - (world.t - f.hookAt) / 1.5);
+    }
+    // glow halo — makes boost fish unmistakably "catch me"
+    var hg = ctx.createRadialGradient(0, 0, 2, 0, 0, f.r * 2.6);
+    hg.addColorStop(0, hexA(set[0], 0.35)); hg.addColorStop(1, hexA(set[0], 0));
+    ctx.fillStyle = hg; ctx.beginPath(); ctx.arc(0, 0, f.r * 2.6, 0, 7); ctx.fill();
+    // tail fin
+    ctx.fillStyle = set[1];
+    ctx.beginPath(); ctx.moveTo(f.r * 0.6, 0);
+    ctx.lineTo(f.r * 1.5, -f.r * 0.55 + wig); ctx.lineTo(f.r * 1.5, f.r * 0.55 + wig);
+    ctx.closePath(); ctx.fill();
+    // body
+    var bg = ctx.createLinearGradient(0, -f.r, 0, f.r);
+    bg.addColorStop(0, set[0]); bg.addColorStop(1, set[1]);
+    ctx.fillStyle = bg;
+    ctx.beginPath(); ctx.ellipse(0, 0, f.r * 1.15, f.r * 0.62, 0, 0, 7); ctx.fill();
+    // dorsal fin + eye (facing the player)
+    ctx.fillStyle = set[1];
+    ctx.beginPath(); ctx.moveTo(-2, -f.r * 0.5);
+    ctx.quadraticCurveTo(f.r * 0.2, -f.r * 1.15, f.r * 0.5, -f.r * 0.4);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(-f.r * 0.55, -f.r * 0.12, 2.1, 0, 7); ctx.fill();
+    ctx.fillStyle = PAL.pupil; ctx.beginPath(); ctx.arc(-f.r * 0.6, -f.r * 0.1, 1.1, 0, 7); ctx.fill();
+    ctx.restore();
+  });
+  // catch sparks
+  world.sparks.forEach(function (q) {
+    var px = q.x - world.dist, a = 1 - q.age / q.total;
+    ctx.fillStyle = "rgba(" + PAL.spark + "," + (0.85 * a) + ")";
+    ctx.beginPath(); ctx.arc(px, q.y, 1.2 + 2.2 * a, 0, 7); ctx.fill();
+  });
+}
+
+/* horizontal speed-lines while a surge is running (drawn behind the octo) */
+function drawBoostFx() {
+  if (!world || world.boost <= 0) return;
+  var a = world.boost / CFG.BOOST_T;
+  ctx.lineCap = "round";
+  for (var k = 0; k < 7; k++) {
+    var yy = world.octo.y - 20 + k * 6.5 + Math.sin(animT * 26 + k * 2.1) * 2;
+    var len = 34 + hash1(k * 7.3 + Math.floor(animT * 18)) * 60;
+    ctx.strokeStyle = "rgba(" + PAL.streak + "," + (0.42 * a) + ")";
+    ctx.lineWidth = 2.4 - (k % 3) * 0.6;
+    ctx.beginPath(); ctx.moveTo(CFG.OCTO_X - 26 - k * 4, yy);
+    ctx.lineTo(CFG.OCTO_X - 26 - k * 4 - len, yy); ctx.stroke();
+  }
+}
+
+/* the safe-glide countdown: a closing ring + hint around the locked octo */
+function drawHoldCue() {
+  if (!world || world.status !== "hold") return;
+  var k = 1 - world.hold / CFG.HOLD_T;
+  ctx.strokeStyle = "rgba(255,255,255," + (0.55 - 0.3 * k) + ")";
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(CFG.OCTO_X, world.octo.y, 12 + 30 * (1 - k), 0, 7); ctx.stroke();
+  ctx.fillStyle = "rgba(255,255,255,.85)";
+  ctx.font = "600 15px Fredoka, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("hold steady\u2026", CFG.OCTO_X, world.octo.y - 44);
+  ctx.textAlign = "left";
 }
 
 /* ------------------------------------------------------------------
@@ -1023,6 +1385,24 @@ function sfxFlap() {                                   // squishy water-blob "gl
 function sfxSolid() { blip(950, 1300, 0.06, 0.05, "sine"); }
 function sfxDie()   { blip(140, 45, 0.5, 0.22, "sawtooth"); blip(420, 90, 0.3, 0.1, "sine"); }
 function sfxPause() { blip(500, 350, 0.09, 0.07, "sine"); }
+function sfxGo()    { blip(320, 640, 0.18, 0.09, "sine"); }            // hold → launch
+function sfxBoost() {                                                   // fish-catch surge
+  if (!soundOn || !AC || AC.state !== "running" || paused()) return;
+  blip(240, 980, 0.34, 0.1, "sine");
+  if (sprayBuf) {                                     // whoosh: rising water sweep
+    var t = AC.currentTime;
+    var n = AC.createBufferSource(); n.buffer = sprayBuf;
+    var bp = AC.createBiquadFilter(); bp.type = "bandpass"; bp.Q.value = 1.1;
+    bp.frequency.setValueAtTime(500, t);
+    bp.frequency.exponentialRampToValueAtTime(3200, t + 0.3);
+    var ngy = AC.createGain();
+    ngy.gain.setValueAtTime(0.0001, t);
+    ngy.gain.exponentialRampToValueAtTime(0.09, t + 0.05);
+    ngy.gain.exponentialRampToValueAtTime(0.0001, t + 0.34);
+    n.connect(bp); bp.connect(ngy); ngy.connect(sfxGain);
+    n.start(t); n.stop(t + 0.36);
+  }
+}
 
 /* ------------------------------------------------------------------
    ##  [PAUSE]  Pause freezes physics, ink, ambient animation and ##
@@ -1035,23 +1415,25 @@ var pauseEl = document.getElementById("pauseScreen");
 var pauseBtn = document.getElementById("pauseBtn");
 function paused() { return world && world.status === "paused"; }
 function togglePause() {
-  if (!world || (world.status !== "flying" && world.status !== "paused")) return;
-  if (world.status === "flying") {
+  if (!world || (world.status !== "flying" && world.status !== "hold" && world.status !== "paused")) return;
+  if (world.status === "paused") {
+    world.status = world._prePause || "flying";           // resumes INTO the hold if interrupted
+    if (world._prePause === "hold") world._prePause = null;
+    pauseEl.classList.add("hidden");
+    pauseBtn.innerHTML = "&#9208;";                     // ⏸
+    pauseBtn.title = "Pause (P / Esc)";
+    if (AC && AC.state === "suspended") AC.resume();
+  } else {
+    world._prePause = world.status;
     world.status = "paused";
     pauseEl.classList.remove("hidden");
     pauseBtn.innerHTML = "&#9654;";                     // ▶
     pauseBtn.title = "Resume (P / Esc)";
     if (AC && AC.state === "running") AC.suspend();     // music + timers halt
-  } else {
-    world.status = "flying";
-    pauseEl.classList.add("hidden");
-    pauseBtn.innerHTML = "&#9208;";                     // ⏸
-    pauseBtn.title = "Pause (P / Esc)";
-    if (AC && AC.state === "suspended") AC.resume();
   }
   sfxPause();
 }
-function autoPause() { if (world && world.status === "flying") togglePause(); }
+function autoPause() { if (world && (world.status === "flying" || world.status === "hold")) togglePause(); }
 window.addEventListener("blur", autoPause);
 document.addEventListener("visibilitychange", function () { if (document.hidden) autoPause(); });
 pauseBtn.addEventListener("click", togglePause);
@@ -1077,12 +1459,14 @@ function resize() {
 }
 window.addEventListener("resize", resize);
 
+var prevBoost = 0;      // edge-detector for the boost sfx
 function newRun() {
   ensureAC();
   if (AC.state === "suspended") AC.resume();
   startMusic();
   world = E.create({ seed: (Date.now() & 0xffff), worldW: W / (H / CFG.H) });
-  world.status = "flying";
+  E.startHold(world);        // v2.1: ~1 s safe glide before gravity takes over
+  prevBoost = 0;
   octoVis = { rot: 0, sq: 0, blinkTimer: 2, blink: 0 };
   poofRings.length = 0;
   startEl.classList.add("hidden"); overEl.classList.add("hidden"); pauseEl.classList.add("hidden");
@@ -1095,11 +1479,11 @@ function gameOver() {
   document.getElementById("finalBest").textContent = best + " m";
   bestEl.textContent = best + " m";
   document.getElementById("newBest").classList.toggle("hidden", !isBest);
-  var titles = { ceiling: "bonked the rocks", floor: "kissed the seabed", kelp: "tangled" };
+  var titles = { ceiling: "bonked the coral", floor: "kissed the seabed", kelp: "netted" };
   var whys = {
     ceiling: "the coral ceiling claimed you",
-    floor: "the seafloor this time",
-    kelp: "your own kelp caught you",
+    floor: "the dunes this time",
+    kelp: "the net you cast snared you",
   };
   document.getElementById("deathTitle").textContent = titles[world.deadCause] || "tangled";
   document.getElementById("deathWhy").textContent = whys[world.deadCause] || "";
@@ -1116,14 +1500,22 @@ function doFlap() {
 }
 
 canvas.addEventListener("pointerdown", function (e) { e.preventDefault(); doFlap(); });
+// v2.1 start flow: SPACE (or tap anywhere on the start screen) begins the run
 window.addEventListener("keydown", function (e) {
+  if (e.target && e.target.tagName === "BUTTON") return;   // Space on a focused button = its click
   if (e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") {
     e.preventDefault();
-    if (world && world.status === "dead") return;         // restart stays button-driven
-    doFlap();
+    if (!world) { newRun(); return; }                    // Space starts / re-dives
+    if (world.status === "dead") return;                 // restart stays button-driven
+    doFlap();                                            // ignored automatically during the hold
   } else if (e.code === "KeyP" || e.code === "Escape") {
     togglePause();
   }
+});
+startEl.addEventListener("pointerdown", function (e) {
+  if (e.target && e.target.tagName === "BUTTON") return; // the Dive button handles itself
+  e.preventDefault();
+  if (!world) newRun();
 });
 document.getElementById("playBtn").addEventListener("click", newRun);
 document.getElementById("againBtn").addEventListener("click", newRun);
@@ -1151,10 +1543,14 @@ function draw() {
   if (world) {
     var diff = Math.min(1, world.dist / (CFG.RAMP * 2));
     drawWalls(vw, diff);
+    drawSchool(vw);                                   // decorative shoal in front of the rocks
     drawCaustics(vw);
+    drawBoostFish(vw);                                // catchable glowing fish + sparks
     drawStalks(vw);
-    drawInk(vw, SD, shx, shy);                           // above water, below octo
+    drawInk(vw, SD, shx, shy);                        // above water, below octo
+    drawBoostFx();                                    // surge speed-lines
     drawOcto();
+    drawHoldCue();                                    // countdown ring during the safe glide
     // death poof rings
     poofRings.forEach(function (r) {
       var k = r.t / 0.6;
@@ -1174,11 +1570,15 @@ function frame(ts) {
   requestAnimationFrame(frame);
   var dt = Math.min(0.033, (ts - lastT) / 1000 || 0.016);
   lastT = ts;                                             // keeps resume jump-free
-  var live = world && world.status === "flying";
+  var live = world && (world.status === "flying" || world.status === "hold");
   if (live) {
+    var wasStatus = world.status;
     animT += dt;
     E.step(world, dt);
-    updateAmbient(dt, W / (H / CFG.H), world.speed);
+    if (wasStatus === "hold" && world.status === "flying") sfxGo();     // launch cue
+    if (world.boost > prevBoost) sfxBoost();                            // rising edge = a catch
+    prevBoost = world.boost;
+    updateAmbient(dt, W / (H / CFG.H), world.status === "hold" ? 12 : world.speed);
     updateOctoVis(dt);
     if (flapFx > 0) flapFx -= dt;
     if (world.status === "dead") gameOver();
