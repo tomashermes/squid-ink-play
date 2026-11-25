@@ -207,7 +207,13 @@ function mulberry32(seed) {
 }
 
 /* Tunnel = ceiling/floor curves from seeded noise + periodic squeezes.
-   The safe gap is guaranteed on every seed (asserted in tests). */
+   The safe gap is guaranteed on every seed (asserted in tests).
+   v2.1f CONTINUITY: the node squeeze used to hard-switch at node>0.55 and the
+   min-gap clamp snapped the gap up at its trigger threshold. Both created
+   x-discontinuities in the wall lines; sampled at fixed screen columns each
+   frame, those kinks popped vertical wall stubs in/out as dist advanced.
+   Everything below is now continuous in x (and in diff): eased in/out with a
+   smoothstep, and the gap floor blends instead of jumping. */
 function makeTunnel(rand) {
   var phase1 = rand() * 7, phase2 = rand() * 7;
   var MIN_GAP = 155, HARD_GAP = 118;
@@ -215,17 +221,27 @@ function makeTunnel(rand) {
     var ceil = 46 + 34 * Math.sin(x / 300 + phase1) + 22 * Math.sin(x / 93 + phase2) + diff * 26;
     var floor = CFG.H - 46 - 34 * Math.sin(x / 340 + phase2) - 22 * Math.sin(x / 84 + phase1) - diff * 26;
     var node = Math.sin(x / 260 + phase1 * 3);
-    if (node > 0.55) {
+    if (node > 0.35) {                    // ease the squeeze in as the node deepens
+      var t = Math.min(1, (node - 0.35) / 0.5);
+      var s = t * t * (3 - 2 * t);        // smoothstep → identity at the gate edge
       var mid = (ceil + floor) / 2;
       var gap = MIN_GAP - diff * (MIN_GAP - HARD_GAP);
-      ceil = Math.max(ceil, mid - gap / 2);
-      floor = Math.min(floor, mid + gap / 2);
+      var cur = floor - ceil;
+      var want = Math.min(cur, gap);      // a node only ever narrows, never widens
+      var g = cur - (cur - want) * s;     // continuous in every input
+      ceil = mid - g / 2; floor = mid + g / 2;
     }
-    if (floor - ceil < MIN_GAP - diff * 30) {
-      var m = (ceil + floor) / 2, g = MIN_GAP - diff * 26;
-      ceil = m - g / 2; floor = m + g / 2;
+    var need = MIN_GAP - diff * 26;       // guaranteed floor, applied continuously
+    var cur2 = floor - ceil;
+    if (cur2 < need) {                    // at the crossing the change is →0 px, not a jump
+      var m2 = (ceil + floor) / 2;
+      ceil = m2 - need / 2; floor = m2 + need / 2;
     }
-    return { top: Math.max(8, ceil), bot: Math.min(CFG.H - 8, floor) };
+    // v2.1f: keep the wall lines ON SCREEN (≥26 px from the edge). The old 8px
+    // clamp let extreme troughs pin the edges to the bezel — the walls vanished,
+    // then rushed back in on the next pinch: "walls appearing/disappearing".
+    // Math.max/min of continuous functions stays continuous (no pop, a corner).
+    return { top: Math.max(26, ceil), bot: Math.min(CFG.H - 26, floor) };
   };
 }
 
