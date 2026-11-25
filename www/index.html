@@ -642,7 +642,10 @@ function roundRect(x, y, w, h, r) {     // path only (fill/stroke by caller)
   ctx.closePath();
 }
 
-/* soft, rounded seabed swell — long gentle waves, no 7px ripple noise */
+/* soft, rounded seabed swell — long gentle waves, no 7px ripple noise.
+   v2.1f: drives SHADING only. The rock silhouette is filled flush to the
+   true collision edge; a bumping silhouette used to open/close a water gap
+   against the edge glow-line every frame while scrolling (= flicker). */
 function rockBump(wx) { return 5 + 7 * Math.sin(wx / 37) + 4 * Math.sin(wx / 19 + 1.3); }
 
 function drawWalls(vw, diff) {
@@ -651,29 +654,34 @@ function drawWalls(vw, diff) {
     var wx = (world ? world.dist : 0) + sx, t = world._tunnel(wx, diff);
     cols.push({ sx: sx, wx: wx, top: t.top, bot: t.bot });
   }
-  var bumpTop = cols.map(function (c) { return Math.max(2, c.top - rockBump(c.wx)); });
-  var bumpBot = cols.map(function (c) { return Math.min(CFG.H - 2, c.bot + rockBump(c.wx * 1.3)); });
 
-  // ceiling rock — smooth coral-cave canopy
+  // ceiling rock — filled FLUSH to the true edge: smooth coral-cave canopy
   var g1 = ctx.createLinearGradient(0, -20, 0, CFG.H * 0.32);
   g1.addColorStop(0, PAL.ceilCore); g1.addColorStop(0.6, PAL.ceilMid); g1.addColorStop(1, PAL.ceilEdge);
   ctx.fillStyle = g1;
-  ctx.beginPath(); ctx.moveTo(-40, -40); ctx.lineTo(cols[0].sx, bumpTop[0]);
-  smoothCont(cols.map(function (c, k) { return { x: c.sx, y: bumpTop[k] }; }));
-  ctx.lineTo(vw + 40, bumpTop[bumpTop.length - 1]); ctx.lineTo(vw + 40, -40);
+  ctx.beginPath(); ctx.moveTo(-40, -40); ctx.lineTo(cols[0].sx, cols[0].top);
+  smoothCont(cols.map(function (c) { return { x: c.sx, y: c.top }; }));
+  ctx.lineTo(vw + 40, cols[cols.length - 1].top); ctx.lineTo(vw + 40, -40);
   ctx.closePath(); ctx.fill();
 
-  // floor rock — rolling dunes instead of a hard slab
+  // floor rock — flush to the true edge (organic swell lives in shading below)
   var g2 = ctx.createLinearGradient(0, CFG.H * 0.66, 0, CFG.H + 20);
   g2.addColorStop(0, PAL.floorEdge); g2.addColorStop(0.45, PAL.floorMid); g2.addColorStop(1, PAL.floorCore);
   ctx.fillStyle = g2;
-  ctx.beginPath(); ctx.moveTo(-40, CFG.H + 40); ctx.lineTo(cols[0].sx, bumpBot[0]);
-  smoothCont(cols.map(function (c, k) { return { x: c.sx, y: bumpBot[k] }; }));
-  ctx.lineTo(vw + 40, bumpBot[bumpBot.length - 1]); ctx.lineTo(vw + 40, CFG.H + 40);
+  ctx.beginPath(); ctx.moveTo(-40, CFG.H + 40); ctx.lineTo(cols[0].sx, cols[0].bot);
+  smoothCont(cols.map(function (c) { return { x: c.sx, y: c.bot }; }));
+  ctx.lineTo(vw + 40, cols[cols.length - 1].bot); ctx.lineTo(vw + 40, CFG.H + 40);
   ctx.closePath(); ctx.fill();
 
+  // wavy shading bands INSIDE the rock — world-keyed, so they scroll stably
+  // and can never poke through (or retreat from) the true edge line
+  ctx.lineJoin = "round"; ctx.lineCap = "round";
+  ctx.strokeStyle = "rgba(255,255,255,.10)"; ctx.lineWidth = 5;
+  ctx.beginPath(); smoothThrough(cols.map(function (c) { return { x: c.sx, y: c.top - 11 - rockBump(c.wx) * 0.55 }; })); ctx.stroke();
+  ctx.strokeStyle = "rgba(120,235,215,.15)"; ctx.lineWidth = 5;
+  ctx.beginPath(); smoothThrough(cols.map(function (c) { return { x: c.sx, y: c.bot + 11 + rockBump(c.wx * 1.3) * 0.55 }; })); ctx.stroke();
+
   // soft glowing outlines on the TRUE collision edges (hitbox honesty kept)
-  ctx.lineCap = "round"; ctx.lineJoin = "round";
   ctx.strokeStyle = PAL.ceilLine; ctx.lineWidth = 2.5;
   ctx.beginPath(); smoothThrough(cols.map(function (c) { return { x: c.sx, y: c.top }; })); ctx.stroke();
   ctx.strokeStyle = PAL.floorLine;
